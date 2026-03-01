@@ -7,7 +7,6 @@ from datetime import datetime, date
 
 from sqlalchemy import (
     Column,
-    String,
     Text,
     Float,
     Numeric,
@@ -15,18 +14,20 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     UniqueConstraint,
+    String,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy import JSON
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB as _PGjsonb
 from sqlalchemy.orm import DeclarativeBase, relationship
+
+# Use JSONB on PostgreSQL; fall back to JSON on SQLite (for unit tests)
+JSONB = JSON().with_variant(_PGjsonb(), "postgresql")
 
 
 class Base(DeclarativeBase):
     pass
-
-
-def _uuid():
-    return str(uuid.uuid4())
 
 
 class Entity(Base):
@@ -56,7 +57,7 @@ class EntityAlias(Base):
 
     __tablename__ = "entity_aliases"
 
-    id = Column(String, primary_key=True, default=_uuid)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     entity_id = Column(
         UUID(as_uuid=True), ForeignKey("entities.id"), nullable=False
     )

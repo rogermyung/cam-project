@@ -8,23 +8,27 @@ import pytest
 from unittest.mock import patch
 from pydantic import ValidationError
 
+# Minimum required env vars for Settings to load
+_REQUIRED = {
+    "DATABASE_URL": "postgresql://cam:cam@localhost:5432/cam",
+    "EDGAR_USER_AGENT": "test@example.org",
+    "API_AUTH_TOKEN": "test-token",
+}
+
 
 def test_config_loads_with_required_vars():
     """Settings loads successfully when all required vars are present."""
-    env = {
-        "DATABASE_URL": "postgresql://cam:cam@localhost:5432/cam",
-        "EDGAR_USER_AGENT": "test@example.org",
-    }
-    with patch.dict(os.environ, env, clear=True):
+    with patch.dict(os.environ, _REQUIRED, clear=True):
         from cam.config import Settings
         s = Settings()
         assert s.database_url == "postgresql://cam:cam@localhost:5432/cam"
         assert s.edgar_user_agent == "test@example.org"
+        assert s.api_auth_token == "test-token"
 
 
 def test_config_raises_on_missing_database_url():
     """ValidationError raised when DATABASE_URL is absent."""
-    env = {"EDGAR_USER_AGENT": "test@example.org"}
+    env = {k: v for k, v in _REQUIRED.items() if k != "DATABASE_URL"}
     with patch.dict(os.environ, env, clear=True):
         from cam.config import Settings
         with pytest.raises(ValidationError):
@@ -33,7 +37,16 @@ def test_config_raises_on_missing_database_url():
 
 def test_config_raises_on_missing_edgar_user_agent():
     """ValidationError raised when EDGAR_USER_AGENT is absent."""
-    env = {"DATABASE_URL": "postgresql://cam:cam@localhost:5432/cam"}
+    env = {k: v for k, v in _REQUIRED.items() if k != "EDGAR_USER_AGENT"}
+    with patch.dict(os.environ, env, clear=True):
+        from cam.config import Settings
+        with pytest.raises(ValidationError):
+            Settings()
+
+
+def test_config_raises_on_missing_api_auth_token():
+    """ValidationError raised when API_AUTH_TOKEN is absent."""
+    env = {k: v for k, v in _REQUIRED.items() if k != "API_AUTH_TOKEN"}
     with patch.dict(os.environ, env, clear=True):
         from cam.config import Settings
         with pytest.raises(ValidationError):
@@ -42,11 +55,7 @@ def test_config_raises_on_missing_edgar_user_agent():
 
 def test_config_defaults():
     """Optional settings have expected defaults."""
-    env = {
-        "DATABASE_URL": "postgresql://cam:cam@localhost:5432/cam",
-        "EDGAR_USER_AGENT": "test@example.org",
-    }
-    with patch.dict(os.environ, env, clear=True):
+    with patch.dict(os.environ, _REQUIRED, clear=True):
         from cam.config import Settings
         s = Settings()
         assert s.alert_threshold_watch == pytest.approx(0.40)
@@ -60,8 +69,7 @@ def test_config_defaults():
 def test_config_env_var_override():
     """Threshold env vars override defaults."""
     env = {
-        "DATABASE_URL": "postgresql://cam:cam@localhost:5432/cam",
-        "EDGAR_USER_AGENT": "test@example.org",
+        **_REQUIRED,
         "ALERT_THRESHOLD_WATCH": "0.30",
         "ALERT_THRESHOLD_CRITICAL": "0.90",
     }

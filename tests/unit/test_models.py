@@ -3,7 +3,6 @@ Tests for SQLAlchemy models — M0 acceptance criteria:
 - All tables have correct columns and constraints.
 """
 
-import uuid
 import pytest
 from sqlalchemy import inspect
 from sqlalchemy import create_engine
@@ -90,7 +89,6 @@ def test_entity_alias_unique_constraint(session):
     session.flush()
 
     alias1 = EntityAlias(
-        id=str(uuid.uuid4()),
         entity_id=entity.id,
         raw_name="Duplicate Corp",
         source="manual",
@@ -100,7 +98,6 @@ def test_entity_alias_unique_constraint(session):
     session.flush()
 
     alias2 = EntityAlias(
-        id=str(uuid.uuid4()),
         entity_id=entity.id,
         raw_name="Duplicate Corp",
         source="manual",
