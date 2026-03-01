@@ -148,6 +148,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      actions: read  # needed by codeql-action/upload-sarif for workflow run fingerprinting
 
     steps:
       - uses: actions/checkout@v4
