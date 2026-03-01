@@ -1,6 +1,6 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=cam --cov-report=term-missing --cov-report=html -v"
+addopts = "--cov=cam --cov-report=term-missing --cov-report=html --cov-report=xml -v"
 asyncio_mode = "auto"
 
 [tool.coverage.run]

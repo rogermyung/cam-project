@@ -7,7 +7,66 @@ on:
     branches: ["main"]
 
 jobs:
+  # ------------------------------------------------------------------
+  # Detect which file categories changed so downstream jobs can skip
+  # when their inputs haven't changed.
+  # ------------------------------------------------------------------
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      ci: ${{ steps.filter.outputs.ci }}
+      docker: ${{ steps.filter.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            python:
+              - '**/*.py'
+              - 'requirements*.txt'
+              - 'pyproject.toml'
+            ci:
+              - '.github/workflows/**'
+            docker:
+              - 'Dockerfile'
+              - 'docker-compose.yml'
+
+  # ------------------------------------------------------------------
+  # Lint — runs when Python source or CI config changes.
+  # ------------------------------------------------------------------
+  lint:
+    needs: changes
+    if: needs.changes.outputs.python == 'true' || needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff — lint
+        run: ruff check .
+
+      - name: Ruff — format check
+        run: ruff format --check .
+
+  # ------------------------------------------------------------------
+  # Test — runs after lint passes, only when Python/CI files change.
+  # Emits coverage.xml for SonarQube.
+  # ------------------------------------------------------------------
   test:
+    needs: [changes, lint]
+    if: needs.changes.outputs.python == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
 
     services:
@@ -69,9 +128,40 @@ jobs:
       - name: Run tests
         run: pytest
 
-      - name: Upload coverage report
+      - name: Upload HTML coverage report
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: coverage-report
+          name: coverage-html
           path: htmlcov/
+
+      - name: Upload XML coverage for SonarQube
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  # ------------------------------------------------------------------
+  # SonarQube — runs after tests pass.
+  # Requires SONAR_TOKEN and SONAR_HOST_URL repository secrets.
+  # ------------------------------------------------------------------
+  sonar:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # SonarQube needs full git history for blame/new-code
+
+      - name: Download XML coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-xml
+
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@v4
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
