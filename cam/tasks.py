@@ -2,18 +2,19 @@
 Celery task definitions. Each ingestion/analysis module registers tasks here.
 """
 
-from celery import Celery
+import os
 
-from cam.config import get_settings
+from celery import Celery
 
 
 def make_celery() -> Celery:
-    settings = get_settings()
-    app = Celery(
-        "cam",
-        broker=settings.redis_url,
-        backend=settings.redis_url,
-    )
+    # Read the broker URL directly from the environment with a safe default.
+    # Avoid calling get_settings() here: it requires DATABASE_URL and
+    # EDGAR_USER_AGENT, which blocks worker/beat from starting if those vars
+    # are not yet set.  Individual tasks call get_settings() themselves when
+    # they actually need full configuration.
+    redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    app = Celery("cam", broker=redis_url, backend=redis_url)
     app.conf.update(
         task_serializer="json",
         result_serializer="json",

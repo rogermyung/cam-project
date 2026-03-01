@@ -135,6 +135,11 @@ jobs:
       - name: Run Alembic upgrade again
         run: alembic upgrade head
 
+      - name: Create test database
+        # Tests always use cam_test to prevent destructive ops (drop_all,
+        # downgrade) from touching the migration DB (cam).
+        run: PGPASSWORD=cam psql -h localhost -U cam -d cam -c "CREATE DATABASE cam_test OWNER cam;"
+
       - name: Run tests
         run: pytest
 
@@ -202,7 +207,7 @@ jobs:
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PR_KEY }}
           script: |
             const prNumber = Number(process.env.PR_NUMBER);
             await github.rest.issues.createComment({

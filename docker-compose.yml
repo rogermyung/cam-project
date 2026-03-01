@@ -45,6 +45,12 @@ services:
     env_file:
       - path: .env
         required: false  # copy .env.example → .env on first checkout
+    environment:
+      # Docker service-name URLs — always override any localhost values in .env
+      # so containers can reach their sibling services on the compose network.
+      DATABASE_URL: postgresql://cam:cam@postgres:5432/cam
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: http://minio:9000
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,6 +65,10 @@ services:
     env_file:
       - path: .env
         required: false  # copy .env.example → .env on first checkout
+    environment:
+      DATABASE_URL: postgresql://cam:cam@postgres:5432/cam
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: http://minio:9000
     depends_on:
       - worker
 
