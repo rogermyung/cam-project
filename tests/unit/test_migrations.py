@@ -7,7 +7,9 @@ Tests for Alembic migrations — M0 acceptance criteria:
 import os
 import subprocess
 import sys
+
 import pytest
+
 from tests.conftest import requires_db
 
 
@@ -25,9 +27,7 @@ def _run_alembic(command: list[str], db_url: str) -> subprocess.CompletedProcess
 
 @pytest.fixture(scope="module")
 def db_url():
-    return os.environ.get(
-        "DATABASE_URL", "postgresql://cam:cam@localhost:5432/cam_test"
-    )
+    return os.environ.get("DATABASE_URL", "postgresql://cam:cam@localhost:5432/cam_test")
 
 
 @requires_db
@@ -40,9 +40,7 @@ def test_upgrade_head(db_url):
 def test_downgrade_is_reversible(db_url):
     _run_alembic(["upgrade", "head"], db_url)
     result = _run_alembic(["downgrade", "-1"], db_url)
-    assert result.returncode == 0, (
-        f"alembic downgrade -1 failed:\n{result.stderr}"
-    )
+    assert result.returncode == 0, f"alembic downgrade -1 failed:\n{result.stderr}"
 
 
 @requires_db
@@ -50,6 +48,4 @@ def test_upgrade_after_downgrade(db_url):
     _run_alembic(["upgrade", "head"], db_url)
     _run_alembic(["downgrade", "-1"], db_url)
     result = _run_alembic(["upgrade", "head"], db_url)
-    assert result.returncode == 0, (
-        f"alembic upgrade head after downgrade failed:\n{result.stderr}"
-    )
+    assert result.returncode == 0, f"alembic upgrade head after downgrade failed:\n{result.stderr}"

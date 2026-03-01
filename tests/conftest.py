@@ -5,9 +5,9 @@ All external API calls must be mocked — no live network calls in tests.
 
 import os
 import socket
-import pytest
 from unittest.mock import patch
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Test environment defaults.
@@ -39,6 +39,7 @@ def set_test_env():
 @pytest.fixture(scope="session")
 def settings():
     from cam.config import get_settings
+
     return get_settings()
 
 
@@ -57,6 +58,7 @@ def _postgres_reachable() -> bool:
     # Verify the database exists by attempting a real connection
     try:
         import psycopg2  # type: ignore
+
         db_url = os.environ.get("DATABASE_URL", TEST_ENV_DEFAULTS["DATABASE_URL"])
         conn = psycopg2.connect(db_url, connect_timeout=2)
         conn.close()

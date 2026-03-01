@@ -4,20 +4,18 @@ Tests for SQLAlchemy models — M0 acceptance criteria:
 """
 
 import pytest
-from sqlalchemy import inspect
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
-from cam.db.models import Base, Entity, EntityAlias, Event, Signal, AlertScore
+from cam.db.models import AlertScore, Base, Entity, EntityAlias
 from tests.conftest import requires_db
 
 
 @pytest.fixture(scope="module")
 def db_url():
     import os
-    return os.environ.get(
-        "DATABASE_URL", "postgresql://cam:cam@localhost:5432/cam_test"
-    )
+
+    return os.environ.get("DATABASE_URL", "postgresql://cam:cam@localhost:5432/cam_test")
 
 
 @pytest.fixture(scope="module")
@@ -112,6 +110,7 @@ def test_entity_alias_unique_constraint(session):
 def test_alert_score_unique_constraint(session):
     """entity_id + score_date must be unique."""
     import datetime
+
     import sqlalchemy.exc
 
     entity = Entity(canonical_name="Alert Corp")

@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: ["main"]
 
+# Allow paths-filter to read PR file lists from the GitHub API.
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   # ------------------------------------------------------------------
   # Detect which file categories changed so downstream jobs can skip
@@ -35,21 +40,17 @@ jobs:
               - 'docker-compose.yml'
 
   # ------------------------------------------------------------------
-  # Lint — runs when Python source or CI config changes.
+  # Lint — uses python:3.11-slim (Python pre-installed, no setup step).
+  # Runs when Python source or CI config changes.
   # ------------------------------------------------------------------
   lint:
     needs: changes
     if: needs.changes.outputs.python == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
+    container: python:3.11-slim
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
 
       - name: Install ruff
         run: pip install ruff
@@ -61,13 +62,14 @@ jobs:
         run: ruff format --check .
 
   # ------------------------------------------------------------------
-  # Test — runs after lint passes, only when Python/CI files change.
-  # Emits coverage.xml for SonarQube.
+  # Test — uses python:3.11 (full image) for native-extension compat.
+  # Runs after lint passes; services are reached by service name.
   # ------------------------------------------------------------------
   test:
     needs: [changes, lint]
     if: needs.changes.outputs.python == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
+    container: python:3.11
 
     services:
       postgres:
@@ -76,8 +78,6 @@ jobs:
           POSTGRES_USER: cam
           POSTGRES_PASSWORD: cam
           POSTGRES_DB: cam
-        ports:
-          - 5432:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
@@ -86,8 +86,6 @@ jobs:
 
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s
@@ -95,8 +93,9 @@ jobs:
           --health-retries 5
 
     env:
-      DATABASE_URL: postgresql://cam:cam@localhost:5432/cam
-      REDIS_URL: redis://localhost:6379/0
+      # Within a container job, services are reachable by service name.
+      DATABASE_URL: postgresql://cam:cam@postgres:5432/cam
+      REDIS_URL: redis://redis:6379/0
       EDGAR_USER_AGENT: ci@cam-project.org
       S3_BUCKET: cam-documents
       S3_ENDPOINT: http://localhost:9000
@@ -106,12 +105,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
 
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
@@ -135,7 +128,7 @@ jobs:
           name: coverage-html
           path: htmlcov/
 
-      - name: Upload XML coverage for SonarQube
+      - name: Upload XML coverage
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -143,25 +136,30 @@ jobs:
           path: coverage.xml
 
   # ------------------------------------------------------------------
-  # SonarQube — runs after tests pass.
-  # Requires SONAR_TOKEN and SONAR_HOST_URL repository secrets.
+  # Semgrep — static analysis after tests pass.
+  # Findings are uploaded to the GitHub Security tab (SARIF).
+  # No external account or server required.
   # ------------------------------------------------------------------
-  sonar:
+  semgrep:
     needs: test
     runs-on: ubuntu-latest
+    container: python:3.11-slim
+
+    permissions:
+      contents: read
+      security-events: write
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # SonarQube needs full git history for blame/new-code
 
-      - name: Download XML coverage
-        uses: actions/download-artifact@v4
-        with:
-          name: coverage-xml
+      - name: Install semgrep
+        run: pip install semgrep
 
-      - name: SonarQube Scan
-        uses: sonarsource/sonarqube-scan-action@v4
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      - name: Run Semgrep
+        run: semgrep --config=auto --sarif --output=semgrep.sarif cam/
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif

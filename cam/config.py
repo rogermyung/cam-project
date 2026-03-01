@@ -3,8 +3,8 @@ Central configuration loaded from environment variables.
 All credentials and thresholds live here; never hardcoded elsewhere.
 """
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -28,9 +28,7 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0")
 
     # SEC EDGAR
-    edgar_user_agent: str = Field(
-        ..., description="Contact email for EDGAR User-Agent header"
-    )
+    edgar_user_agent: str = Field(..., description="Contact email for EDGAR User-Agent header")
 
     # NLP
     nlp_model_dir: str = Field(default="./models")
