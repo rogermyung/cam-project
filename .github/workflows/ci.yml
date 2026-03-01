@@ -57,6 +57,7 @@ jobs:
       - uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
+          cache-dependency-glob: "requirements*.txt"
 
       - name: Install ruff
         run: uv pip install --system ruff
@@ -175,6 +176,7 @@ jobs:
       - uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
+          cache-dependency-glob: "requirements*.txt"
 
       - name: Install semgrep
         run: uv pip install --system semgrep
