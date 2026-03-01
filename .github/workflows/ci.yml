@@ -136,12 +136,11 @@ jobs:
           path: coverage.xml
 
   # ------------------------------------------------------------------
-  # Semgrep — static analysis after tests pass.
-  # Findings are uploaded to the GitHub Security tab (SARIF).
+  # Semgrep — static analysis after lint pass.
   # No external account or server required.
   # ------------------------------------------------------------------
   semgrep:
-    needs: test
+    needs: [changes, lint]
     runs-on: ubuntu-latest
     container: python:3.11-slim
 
@@ -159,8 +158,4 @@ jobs:
       - name: Run Semgrep
         run: semgrep --config=auto --sarif --output=semgrep.sarif cam/
 
-      - name: Upload SARIF to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: semgrep.sarif
+
