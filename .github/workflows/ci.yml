@@ -190,8 +190,9 @@ jobs:
         run: semgrep --config=auto --sarif --output=semgrep.sarif cam/
 
   # ------------------------------------------------------------------
-  # Qodo — post /review comment after tests pass on a PR.
-  # Gating on the test job ensures review only fires on green builds.
+  # Qodo — mark the PR ready for review after tests pass.
+  # .qodo-merge.toml configures Qodo to run /describe /review /improve
+  # on the ready-for-review event, and /review on subsequent pushes.
   # ------------------------------------------------------------------
   qodo:
     needs: test
@@ -202,17 +203,7 @@ jobs:
       pull-requests: write
 
     steps:
-      - name: Trigger Qodo review
-        uses: actions/github-script@v7
+      - name: Mark PR ready for review
         env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        with:
-          github-token: ${{ secrets.PR_KEY }}
-          script: |
-            const prNumber = Number(process.env.PR_NUMBER);
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              body: '/review',
-            });
+          GH_TOKEN: ${{ secrets.PR_KEY }}
+        run: gh pr ready ${{ github.event.pull_request.number }} --repo ${{ github.repository }}
