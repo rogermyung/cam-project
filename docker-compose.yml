@@ -42,7 +42,9 @@ services:
   worker:
     build: .
     command: celery -A cam.tasks:celery_app worker --loglevel=info
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false  # copy .env.example → .env on first checkout
     depends_on:
       postgres:
         condition: service_healthy
@@ -54,7 +56,9 @@ services:
   beat:
     build: .
     command: celery -A cam.tasks:celery_app beat --loglevel=info
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false  # copy .env.example → .env on first checkout
     depends_on:
       - worker
 

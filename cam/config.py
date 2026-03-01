@@ -44,7 +44,11 @@ class Settings(BaseSettings):
     entity_review_threshold: float = Field(default=0.65)
 
     # Output
-    api_auth_token: str = Field(..., description="Bearer token for API authentication")
+    # Optional here so workers/Celery can start without an API credential.
+    # The API layer must assert this is set before accepting requests.
+    api_auth_token: str | None = Field(
+        default=None, description="Bearer token for API authentication"
+    )
     digest_email_to: str = Field(default="alerts@example.org")
     smtp_host: str = Field(default="localhost")
     smtp_port: int = Field(default=587)
