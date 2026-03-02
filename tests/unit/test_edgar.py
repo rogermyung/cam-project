@@ -21,15 +21,19 @@ from sqlalchemy.orm import sessionmaker
 
 from cam.db.models import Base, Entity, Event
 from cam.ingestion.edgar import (
+    REQUEST_DELAY,
     FilingMetadata,
     _accession_no_dashes,
+    _extract_text,
     _filing_in_db,
     _filing_url,
+    _is_retriable_error,
     _object_exists,
     _object_store_key,
     _upsert_filing_event,
     download_filing,
     fetch_company_filings,
+    fetch_xbrl_facts,
     get_cik_for_ticker,
     ingest_all_10k,
 )
@@ -56,17 +60,6 @@ def _make_response(data: dict | str, status_code: int = 200) -> MagicMock:
         resp.text = data
         resp.json.side_effect = ValueError("not json")
     resp.raise_for_status.return_value = None
-    return resp
-
-
-def _make_429_response() -> MagicMock:
-    resp = MagicMock(spec=httpx.Response)
-    resp.status_code = 429
-    req = MagicMock(spec=httpx.Request)
-    resp.request = req
-    resp.raise_for_status.side_effect = httpx.HTTPStatusError(
-        "429", request=req, response=resp
-    )
     return resp
 
 
@@ -116,6 +109,16 @@ def _apple_filing() -> FilingMetadata:
         filed_date=APPLE_FILED,
         primary_document=APPLE_DOC,
     )
+
+
+def _s3_no_objects() -> MagicMock:
+    from botocore.exceptions import ClientError
+
+    s3 = MagicMock()
+    s3.head_object.side_effect = ClientError(
+        {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject"
+    )
+    return s3
 
 
 # ===========================================================================
@@ -321,12 +324,14 @@ class TestFetchCompanyFilings:
         """If the old filings page fails, log a warning and continue."""
         amazon_data = _load_fixture("submissions_amazon.json")
 
-        # Use HTTPStatusError (not NetworkError) so tenacity does NOT retry it
-        # — the retry decorator only retries TimeoutException and NetworkError.
+        # Use HTTPStatusError with status_code=500 so tenacity does NOT retry it
+        # — _is_retriable_error only retries 429, not other 4xx/5xx codes.
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 500
         server_error = httpx.HTTPStatusError(
             "500 Internal Server Error",
             request=MagicMock(spec=httpx.Request),
-            response=MagicMock(spec=httpx.Response),
+            response=mock_response,
         )
 
         client = MagicMock(spec=httpx.Client)
@@ -389,7 +394,8 @@ class TestDownloadFiling:
 
         assert doc.text == sample_text
         assert "edgar/" in doc.object_store_path
-        assert _accession_no_dashes(APPLE_ACCESSION) in doc.object_store_path
+        # Key must use dashed accession number per PLAN.md convention
+        assert APPLE_ACCESSION in doc.object_store_path
         s3.put_object.assert_called_once()
 
     def test_idempotent_skips_download_when_in_object_store(self):
@@ -405,6 +411,7 @@ class TestDownloadFiling:
         s3.put_object.assert_not_called()
 
     def test_correct_object_store_key_format(self):
+        """Object-store key uses dashed accession number: edgar/{cik}/{acc}/full.txt"""
         filing = _apple_filing()
         client = MagicMock(spec=httpx.Client)
         client.get.return_value = _make_response("filing text")
@@ -412,7 +419,7 @@ class TestDownloadFiling:
 
         doc = download_filing(filing, client=client, s3_client=s3)
 
-        expected_key = f"edgar/{APPLE_CIK}/{_accession_no_dashes(APPLE_ACCESSION)}/full.txt"
+        expected_key = f"edgar/{APPLE_CIK}/{APPLE_ACCESSION}/full.txt"
         assert doc.object_store_path == expected_key
 
     def test_raises_on_http_error(self):
@@ -440,8 +447,8 @@ class TestDownloadFiling:
 
         assert doc.text == plain_text
 
-    def test_html_filing_returned_as_text(self):
-        """Verify HTML filing content passes through as raw text."""
+    def test_html_filing_stripped_to_plain_text(self):
+        """HTML content must be stripped to plain text before storage."""
         html_text = "<html><body><h1>FORM 10-K</h1><p>Risk factors...</p></body></html>"
         filing = _apple_filing()
         client = MagicMock(spec=httpx.Client)
@@ -450,7 +457,155 @@ class TestDownloadFiling:
 
         doc = download_filing(filing, client=client, s3_client=s3)
 
-        assert doc.text == html_text
+        assert "<html>" not in doc.text
+        assert "<body>" not in doc.text
+        assert "FORM 10-K" in doc.text
+        assert "Risk factors" in doc.text
+
+    def test_script_and_style_tags_excluded_from_text(self):
+        """Content inside <script> and <style> blocks must not appear in output."""
+        html_text = (
+            "<html><head><style>body{color:red}</style></head>"
+            "<body><script>alert(1)</script><p>Annual Report</p></body></html>"
+        )
+        filing = _apple_filing()
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = _make_response(html_text)
+        s3 = self._make_s3(key_exists=False)
+
+        doc = download_filing(filing, client=client, s3_client=s3)
+
+        assert "color:red" not in doc.text
+        assert "alert(1)" not in doc.text
+        assert "Annual Report" in doc.text
+
+
+# ===========================================================================
+# _extract_text
+# ===========================================================================
+
+
+class TestExtractText:
+    def test_plain_text_returned_unchanged(self):
+        text = "FORM 10-K\n\nRISK FACTORS"
+        assert _extract_text(text) == text
+
+    def test_html_tags_stripped(self):
+        html = "<html><body><h1>Title</h1><p>Content here.</p></body></html>"
+        result = _extract_text(html)
+        assert "<html>" not in result
+        assert "Title" in result
+        assert "Content here." in result
+
+    def test_doctype_triggers_html_stripping(self):
+        html = "<!DOCTYPE html><html><body><p>Text</p></body></html>"
+        result = _extract_text(html)
+        assert "<!DOCTYPE" not in result
+        assert "Text" in result
+
+    def test_script_content_excluded(self):
+        html = "<html><body><script>var x=1;</script><p>Keep me</p></body></html>"
+        result = _extract_text(html)
+        assert "var x=1" not in result
+        assert "Keep me" in result
+
+    def test_style_content_excluded(self):
+        html = "<html><head><style>.cls{color:red}</style></head><body><p>Keep</p></body></html>"
+        result = _extract_text(html)
+        assert "color:red" not in result
+        assert "Keep" in result
+
+
+# ===========================================================================
+# Retry logic — _is_retriable_error
+# ===========================================================================
+
+
+class TestRetryLogic:
+    def test_network_error_is_retriable(self):
+        assert _is_retriable_error(httpx.NetworkError("conn refused")) is True
+
+    def test_timeout_exception_is_retriable(self):
+        assert _is_retriable_error(httpx.TimeoutException("timeout")) is True
+
+    def test_429_http_status_error_is_retriable(self):
+        resp = MagicMock()
+        resp.status_code = 429
+        exc = httpx.HTTPStatusError("rate limited", request=MagicMock(), response=resp)
+        assert _is_retriable_error(exc) is True
+
+    def test_500_http_status_error_not_retriable(self):
+        resp = MagicMock()
+        resp.status_code = 500
+        exc = httpx.HTTPStatusError("server error", request=MagicMock(), response=resp)
+        assert _is_retriable_error(exc) is False
+
+    def test_404_http_status_error_not_retriable(self):
+        resp = MagicMock()
+        resp.status_code = 404
+        exc = httpx.HTTPStatusError("not found", request=MagicMock(), response=resp)
+        assert _is_retriable_error(exc) is False
+
+    def test_value_error_not_retriable(self):
+        assert _is_retriable_error(ValueError("bad json")) is False
+
+
+# ===========================================================================
+# fetch_xbrl_facts
+# ===========================================================================
+
+
+class TestFetchXbrlFacts:
+    def test_returns_key_financial_concepts(self):
+        xbrl_data = _load_fixture("xbrl_companyfacts_apple.json")
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = _make_response(xbrl_data)
+
+        facts = fetch_xbrl_facts(APPLE_CIK, client=client)
+
+        assert facts is not None
+        assert "Revenues" in facts
+        assert "Assets" in facts
+        assert "NetIncomeLoss" in facts
+        assert "StockholdersEquity" in facts
+
+    def test_extracts_most_recent_annual_value(self):
+        xbrl_data = _load_fixture("xbrl_companyfacts_apple.json")
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = _make_response(xbrl_data)
+
+        facts = fetch_xbrl_facts(APPLE_CIK, client=client)
+
+        # Most recent Apple revenue (2023 fiscal year end)
+        assert facts["Revenues"]["value"] == 383285000000
+        assert facts["Revenues"]["period_end"] == "2023-09-30"
+
+    def test_returns_none_on_http_error(self):
+        client = MagicMock(spec=httpx.Client)
+        client.get.side_effect = httpx.NetworkError("connection refused")
+
+        facts = fetch_xbrl_facts(APPLE_CIK, client=client)
+
+        assert facts is None
+
+    def test_returns_none_when_no_us_gaap_facts(self):
+        empty_data = {"cik": "0000320193", "entityName": "Apple Inc.", "facts": {}}
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = _make_response(empty_data)
+
+        facts = fetch_xbrl_facts(APPLE_CIK, client=client)
+
+        assert facts is None
+
+    def test_cik_zero_padded_in_url(self):
+        xbrl_data = _load_fixture("xbrl_companyfacts_apple.json")
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = _make_response(xbrl_data)
+
+        fetch_xbrl_facts("320193", client=client)  # unpadded CIK
+
+        called_url = client.get.call_args[0][0]
+        assert "CIK0000320193" in called_url
 
 
 # ===========================================================================
@@ -459,14 +614,13 @@ class TestDownloadFiling:
 
 
 class TestRateLimiting:
-    def test_sleep_called_between_requests_in_ingest(self, db, sample_entity):
-        """ingest_all_10k must call time.sleep between requests."""
+    def test_sleep_called_with_correct_delay_in_ingest(self, db, sample_entity):
+        """ingest_all_10k must call time.sleep(REQUEST_DELAY) between requests."""
         tickers_data = _load_fixture("company_tickers.json")
         apple_data = _load_fixture("submissions_apple.json")
         sample_text = (FIXTURES / "filing_10k_sample.txt").read_text()
 
         client = MagicMock(spec=httpx.Client)
-        # Ticker lookup + submissions + each filing download
         client.get.side_effect = [
             _make_response(tickers_data),  # get_cik_for_ticker
             _make_response(apple_data),    # fetch_company_filings
@@ -476,13 +630,6 @@ class TestRateLimiting:
             _make_response(sample_text),   # download filing 4
         ]
 
-        from botocore.exceptions import ClientError
-
-        s3 = MagicMock()
-        s3.head_object.side_effect = ClientError(
-            {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject"
-        )
-
         with patch("cam.ingestion.edgar.time") as mock_time:
             mock_time.sleep.return_value = None
             ingest_all_10k(
@@ -490,11 +637,17 @@ class TestRateLimiting:
                 entity_ids=[sample_entity.id],
                 db=db,
                 client=client,
-                s3_client=s3,
+                s3_client=_s3_no_objects(),
+                fetch_xbrl=False,
             )
 
-        # time.sleep must have been called multiple times (one per request)
+        # Every sleep call must use exactly REQUEST_DELAY — no bursting above 10 req/s
         assert mock_time.sleep.call_count >= 2
+        for call_args in mock_time.sleep.call_args_list:
+            delay = call_args[0][0]
+            assert delay == REQUEST_DELAY, (
+                f"Expected sleep({REQUEST_DELAY}) but got sleep({delay})"
+            )
 
     def test_request_delay_constant_exists_and_is_positive(self):
         import cam.ingestion.edgar as edgar_mod
@@ -509,15 +662,6 @@ class TestRateLimiting:
 
 
 class TestIngestAll10k:
-    def _s3_no_objects(self):
-        from botocore.exceptions import ClientError
-
-        s3 = MagicMock()
-        s3.head_object.side_effect = ClientError(
-            {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject"
-        )
-        return s3
-
     def test_ingests_10k_filings_for_entity(self, db, sample_entity):
         tickers_data = _load_fixture("company_tickers.json")
         apple_data = _load_fixture("submissions_apple.json")
@@ -540,7 +684,8 @@ class TestIngestAll10k:
                 entity_ids=[sample_entity.id],
                 db=db,
                 client=client,
-                s3_client=self._s3_no_objects(),
+                s3_client=_s3_no_objects(),
+                fetch_xbrl=False,
             )
 
         assert result.ingested == 4
@@ -568,16 +713,15 @@ class TestIngestAll10k:
 
         with patch("cam.ingestion.edgar.time") as mock_time:
             mock_time.sleep.return_value = None
-            # First run
             result1 = ingest_all_10k(
                 date(2020, 1, 1),
                 entity_ids=[sample_entity.id],
                 db=db,
                 client=_fresh_client(),
-                s3_client=self._s3_no_objects(),
+                s3_client=_s3_no_objects(),
+                fetch_xbrl=False,
             )
 
-        # Second run — filings now exist in DB
         with patch("cam.ingestion.edgar.time") as mock_time:
             mock_time.sleep.return_value = None
             result2 = ingest_all_10k(
@@ -585,7 +729,8 @@ class TestIngestAll10k:
                 entity_ids=[sample_entity.id],
                 db=db,
                 client=_fresh_client(),
-                s3_client=self._s3_no_objects(),
+                s3_client=_s3_no_objects(),
+                fetch_xbrl=False,
             )
 
         assert result1.ingested == 4
@@ -617,7 +762,8 @@ class TestIngestAll10k:
                 entity_ids=[entity.id],
                 db=db,
                 client=client,
-                s3_client=self._s3_no_objects(),
+                s3_client=_s3_no_objects(),
+                fetch_xbrl=False,
             )
 
         assert result.errors == 1
@@ -643,7 +789,8 @@ class TestIngestAll10k:
                 entity_ids=[entity.id],
                 db=db,
                 client=client,
-                s3_client=self._s3_no_objects(),
+                s3_client=_s3_no_objects(),
+                fetch_xbrl=False,
             )
 
         assert result.total == 0
@@ -679,7 +826,8 @@ class TestIngestAll10k:
                 entity_ids=[apple.id],  # only Apple
                 db=db,
                 client=client,
-                s3_client=self._s3_no_objects(),
+                s3_client=_s3_no_objects(),
+                fetch_xbrl=False,
             )
 
         # Only Apple processed — MSFT not included
@@ -704,8 +852,9 @@ class TestIngestAll10k:
                 entity_ids=[sample_entity.id],
                 db=db,
                 client=client,
-                s3_client=self._s3_no_objects(),
+                s3_client=_s3_no_objects(),
                 filing_types=["8-K"],
+                fetch_xbrl=False,
             )
 
         assert result.ingested == 1
@@ -732,7 +881,8 @@ class TestIngestAll10k:
                 entity_ids=[sample_entity.id],
                 db=db,
                 client=client,
-                s3_client=self._s3_no_objects(),
+                s3_client=_s3_no_objects(),
+                fetch_xbrl=False,
             )
 
         events = db.execute(select(Event).where(Event.source == "sec_edgar")).scalars().all()
@@ -748,6 +898,37 @@ class TestIngestAll10k:
         assert ev.raw_json is not None
         assert ev.raw_json["filing_type"] == "10-K"
         assert ev.raw_json["cik"] == APPLE_CIK
+
+    def test_xbrl_facts_stored_in_event_row(self, db, sample_entity):
+        """When fetch_xbrl=True, XBRL financial data appears in raw_json."""
+        tickers_data = _load_fixture("company_tickers.json")
+        xbrl_data = _load_fixture("xbrl_companyfacts_apple.json")
+        apple_data = _load_fixture("submissions_apple.json")
+        sample_text = "10-K text"
+
+        client = MagicMock(spec=httpx.Client)
+        client.get.side_effect = [
+            _make_response(tickers_data),  # get_cik_for_ticker
+            _make_response(xbrl_data),     # fetch_xbrl_facts
+            _make_response(apple_data),    # fetch_company_filings
+            _make_response(sample_text),   # download filing (only 1 since 2024-01-01)
+        ]
+
+        with patch("cam.ingestion.edgar.time") as mock_time:
+            mock_time.sleep.return_value = None
+            ingest_all_10k(
+                date(2024, 1, 1),
+                entity_ids=[sample_entity.id],
+                db=db,
+                client=client,
+                s3_client=_s3_no_objects(),
+                fetch_xbrl=True,
+            )
+
+        ev = db.execute(select(Event).where(Event.source == "sec_edgar")).scalar_one()
+        assert ev.raw_json["xbrl_facts"] is not None
+        assert "Revenues" in ev.raw_json["xbrl_facts"]
+        assert "Assets" in ev.raw_json["xbrl_facts"]
 
     def test_handles_download_error_gracefully(self, db, sample_entity):
         tickers_data = _load_fixture("company_tickers.json")
@@ -771,7 +952,8 @@ class TestIngestAll10k:
                 entity_ids=[sample_entity.id],
                 db=db,
                 client=client,
-                s3_client=self._s3_no_objects(),
+                s3_client=_s3_no_objects(),
+                fetch_xbrl=False,
             )
 
         assert result.errors == 4
@@ -796,11 +978,15 @@ class TestHelpers:
         assert "/320193/" in url
 
     def test_object_store_key_format(self):
+        """Key must use dashed accession number per PLAN.md: edgar/{cik}/{acc}/full.txt"""
         key = _object_store_key("0000320193", "0000320193-24-000006")
-        assert key.startswith("edgar/")
-        assert "0000320193" in key
-        assert "000032019324000006" in key
-        assert key.endswith("/full.txt")
+        assert key == "edgar/0000320193/0000320193-24-000006/full.txt"
+
+    def test_object_store_key_no_dash_stripping(self):
+        """Dashes in the accession number must be preserved in the key."""
+        key = _object_store_key("0000320193", "0000320193-24-000006")
+        assert "0000320193-24-000006" in key  # dashes preserved
+        assert "000032019324000006" not in key  # stripped form must NOT appear
 
     def test_object_exists_returns_true(self):
         s3 = MagicMock()
@@ -837,6 +1023,16 @@ class TestHelpers:
 
         assert _filing_in_db(db, APPLE_ACCESSION) is True
 
+    def test_filing_in_db_exact_match_only(self, db, sample_entity):
+        """_filing_in_db must not match a different accession number."""
+        filing = _apple_filing()
+        filing.entity_id = sample_entity.id
+        key = _object_store_key(filing.cik, filing.accession_number)
+        _upsert_filing_event(db, filing, key, sample_entity.id)
+
+        # A different accession number must NOT match
+        assert _filing_in_db(db, "0000320193-23-000106") is False
+
     def test_upsert_filing_event_creates_event_row(self, db, sample_entity):
         filing = _apple_filing()
         filing.entity_id = sample_entity.id
@@ -851,6 +1047,17 @@ class TestHelpers:
         assert ev.event_type == "filing"
         assert ev.event_date == APPLE_FILED
         assert ev.raw_json["accession_number"] == APPLE_ACCESSION
+
+    def test_upsert_filing_event_stores_xbrl_facts(self, db, sample_entity):
+        filing = _apple_filing()
+        filing.entity_id = sample_entity.id
+        key = _object_store_key(filing.cik, filing.accession_number)
+        xbrl = {"Revenues": {"value": 383285000000, "period_end": "2023-09-30"}}
+
+        _upsert_filing_event(db, filing, key, sample_entity.id, xbrl_facts=xbrl)
+
+        ev = db.execute(select(Event)).scalar_one()
+        assert ev.raw_json["xbrl_facts"] == xbrl
 
     def test_upsert_filing_event_is_callable_twice_without_error(self, db, sample_entity):
         """Calling _upsert_filing_event twice does not crash (idempotent)."""

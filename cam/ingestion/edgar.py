@@ -14,13 +14,14 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import date
+from html.parser import HTMLParser
 from typing import Any
 from uuid import UUID
 
 import httpx
 from tenacity import (
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -33,9 +34,13 @@ logger = logging.getLogger(__name__)
 _EDGAR_SUBMISSIONS_BASE = "https://data.sec.gov/submissions"
 _EDGAR_COMPANY_TICKERS = "https://data.sec.gov/files/company_tickers.json"
 _EDGAR_ARCHIVES_BASE = "https://www.sec.gov/Archives/edgar/data"
+_EDGAR_XBRL_BASE = "https://data.sec.gov/api/xbrl/companyfacts"
+
+# Key US-GAAP concepts to extract from the companyfacts endpoint.
+_XBRL_KEY_CONCEPTS = ("Revenues", "Assets", "NetIncomeLoss", "StockholdersEquity")
 
 # Seconds between requests to stay within EDGAR's 10 req/s limit.
-# Tests override this via monkeypatch.
+# Tests override this via monkeypatch on cam.ingestion.edgar.REQUEST_DELAY.
 REQUEST_DELAY: float = 0.1
 
 
@@ -58,11 +63,11 @@ class FilingMetadata:
 
 @dataclass
 class FilingDocument:
-    """Downloaded filing text with its object-store path."""
+    """Downloaded filing text (plain text) with its object-store path."""
 
     metadata: FilingMetadata
     text: str
-    object_store_path: str  # e.g. "edgar/0000320193/000032019324000006/full.txt"
+    object_store_path: str  # e.g. "edgar/0000320193/0000320193-24-000006/full.txt"
 
 
 @dataclass
@@ -77,22 +82,41 @@ class IngestResult:
 
 
 # ---------------------------------------------------------------------------
+# Retry helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_retriable_error(exc: BaseException) -> bool:
+    """Return True if *exc* should be retried by tenacity.
+
+    Retriable conditions:
+    - Network / timeout errors (transient connectivity issues)
+    - HTTP 429 (EDGAR rate limit exceeded)
+    """
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+        return True
+    return False
+
+
+def _make_retry_decorator():
+    """Return a tenacity retry decorator for transient EDGAR errors."""
+    return retry(
+        retry=retry_if_exception(_is_retriable_error),
+        wait=wait_exponential(multiplier=1, min=1, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
 
 def _headers() -> dict[str, str]:
     return {"User-Agent": get_settings().edgar_user_agent}
-
-
-def _make_retry_decorator():
-    """Return a tenacity retry decorator for transient EDGAR errors."""
-    return retry(
-        retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError)),
-        wait=wait_exponential(multiplier=1, min=1, max=60),
-        stop=stop_after_attempt(5),
-        reraise=True,
-    )
 
 
 def _get(
@@ -111,8 +135,8 @@ def _get(
             resp = httpx.get(url, params=params, headers=_headers(), timeout=30)
 
         if resp.status_code == 429:
-            # EDGAR rate-limit: treat as a retriable error by raising so
-            # tenacity can apply exponential back-off.
+            # Re-raise as HTTPStatusError so _is_retriable_error catches it
+            # and tenacity applies exponential back-off before retrying.
             raise httpx.HTTPStatusError(
                 "EDGAR rate limited (429)",
                 request=resp.request,
@@ -137,9 +161,50 @@ def _filing_url(cik: str, accession_number: str, primary_document: str) -> str:
 
 
 def _object_store_key(cik: str, accession_number: str) -> str:
-    """Canonical S3/MinIO key for a filing document."""
-    acc_clean = _accession_no_dashes(accession_number)
-    return f"edgar/{cik}/{acc_clean}/full.txt"
+    """Canonical S3/MinIO key for a filing document.
+
+    Keeps dashes in the accession number to match the PLAN.md convention:
+        edgar/{cik}/{accession_number}/full.txt
+    """
+    return f"edgar/{cik}/{accession_number}/full.txt"
+
+
+class _HTMLStripper(HTMLParser):
+    """Minimal HTML → plain-text converter using the stdlib html.parser."""
+
+    _SKIP_TAGS = frozenset({"script", "style", "head"})
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: list[str] = []
+        self._skip_depth: int = 0
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag.lower() in self._SKIP_TAGS:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in self._SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth == 0:
+            stripped = data.strip()
+            if stripped:
+                self._parts.append(stripped)
+
+    def get_text(self) -> str:
+        return "\n".join(self._parts)
+
+
+def _extract_text(content: str) -> str:
+    """Return plain text from *content*, stripping HTML tags when present."""
+    lowered = content.lstrip()[:500].lower()
+    if "<html" in lowered or "<!doctype" in lowered:
+        stripper = _HTMLStripper()
+        stripper.feed(content)
+        return stripper.get_text()
+    return content
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +312,49 @@ def fetch_company_filings(
     return results
 
 
+def fetch_xbrl_facts(
+    cik: str,
+    *,
+    client: httpx.Client | None = None,
+) -> dict | None:
+    """Fetch key XBRL financial facts for a company from the companyfacts API.
+
+    Returns a dict mapping US-GAAP concept names to their most recent annual
+    value, or None on failure.  The result is suitable for storage in
+    ``events.raw_json["xbrl_facts"]``.
+
+    Args:
+        cik: Company CIK (will be zero-padded to 10 digits).
+        client: Optional httpx.Client for test injection.
+    """
+    padded = cik.zfill(10)
+    url = f"{_EDGAR_XBRL_BASE}/CIK{padded}.json"
+
+    try:
+        resp = _get(url, client=client)
+        data = resp.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("Failed to fetch XBRL facts for CIK %s: %s", cik, exc)
+        return None
+
+    us_gaap = data.get("facts", {}).get("us-gaap", {})
+    summary: dict[str, dict] = {}
+
+    for concept in _XBRL_KEY_CONCEPTS:
+        if concept not in us_gaap:
+            continue
+        usd_values = us_gaap[concept].get("units", {}).get("USD", [])
+        annual = [v for v in usd_values if v.get("form") in ("10-K", "10-K/A")]
+        if annual:
+            latest = max(annual, key=lambda v: v.get("end", ""))
+            summary[concept] = {
+                "value": latest.get("val"),
+                "period_end": latest.get("end"),
+            }
+
+    return summary or None
+
+
 def download_filing(
     filing_metadata: FilingMetadata,
     *,
@@ -255,8 +363,9 @@ def download_filing(
 ) -> FilingDocument:
     """Download a filing's primary document and persist it to the object store.
 
-    Idempotent: if the filing already exists in the object store, the stored
-    text is returned without making another HTTP request to EDGAR.
+    HTML content is stripped to plain text before storage.  Idempotent: if the
+    filing already exists in the object store, the stored text is returned
+    without making another HTTP request to EDGAR.
 
     Args:
         filing_metadata: Metadata describing the filing to download.
@@ -264,7 +373,7 @@ def download_filing(
         s3_client: Optional boto3 S3 client for test injection.
 
     Returns:
-        FilingDocument with the full text and object-store path.
+        FilingDocument with plain-text content and object-store path.
     """
     settings = get_settings()
     if s3_client is None:
@@ -297,7 +406,7 @@ def download_filing(
     )
     try:
         resp = _get(url, client=client)
-        text = resp.text
+        text = _extract_text(resp.text)
     except httpx.HTTPError as exc:
         logger.error(
             "Failed to download filing %s: %s", filing_metadata.accession_number, exc
@@ -311,9 +420,7 @@ def download_filing(
         Body=text.encode("utf-8"),
         ContentType="text/plain",
     )
-    logger.info(
-        "Stored filing %s → %s", filing_metadata.accession_number, key
-    )
+    logger.info("Stored filing %s → %s", filing_metadata.accession_number, key)
 
     return FilingDocument(metadata=filing_metadata, text=text, object_store_path=key)
 
@@ -326,13 +433,14 @@ def ingest_all_10k(
     client: httpx.Client | None = None,
     s3_client=None,
     filing_types: list[str] | None = None,
+    fetch_xbrl: bool = True,
 ) -> IngestResult:
     """Ingest 10-K (and optionally other) filings for all tracked entities.
 
     Designed to run as an overnight Celery task.  Iterates over all Entity
-    rows with a non-null ticker, resolves each ticker to a CIK, fetches
-    metadata for matching filings, downloads each one, and writes an Event
-    row.  Already-ingested filings are skipped (idempotent).
+    rows with a non-null ticker, resolves each ticker to a CIK, optionally
+    fetches XBRL financial facts, downloads each matching filing, and writes
+    an Event row.  Already-ingested filings are skipped (idempotent).
 
     Args:
         since_date: Only process filings filed on or after this date.
@@ -341,6 +449,8 @@ def ingest_all_10k(
         client: Optional httpx.Client for test injection.
         s3_client: Optional S3 client for test injection.
         filing_types: Form types to ingest.  Defaults to ["10-K"].
+        fetch_xbrl: When True (default), fetch XBRL financial facts per entity
+            and store them in ``events.raw_json["xbrl_facts"]``.
 
     Returns:
         IngestResult with counts of ingested / skipped / errored filings.
@@ -377,6 +487,12 @@ def ingest_all_10k(
             result.error_details.append(f"No CIK for ticker {entity.ticker}")
             continue
 
+        # Optionally fetch XBRL financial facts once per entity/CIK
+        xbrl_facts: dict | None = None
+        if fetch_xbrl:
+            time.sleep(REQUEST_DELAY)
+            xbrl_facts = fetch_xbrl_facts(cik, client=client)
+
         # Fetch filing metadata
         try:
             time.sleep(REQUEST_DELAY)
@@ -400,7 +516,9 @@ def ingest_all_10k(
 
                 time.sleep(REQUEST_DELAY)
                 doc = download_filing(filing, client=client, s3_client=s3_client)
-                _upsert_filing_event(db, filing, doc.object_store_path, entity.id)
+                _upsert_filing_event(
+                    db, filing, doc.object_store_path, entity.id, xbrl_facts=xbrl_facts
+                )
                 result.ingested += 1
 
             except Exception as exc:  # noqa: BLE001
@@ -434,15 +552,18 @@ def _object_exists(s3_client, bucket: str, key: str) -> bool:
 
 
 def _filing_in_db(db, accession_number: str) -> bool:
-    """Return True if an Event for this accession number already exists."""
+    """Return True if an Event for this accession number already exists.
+
+    Uses a JSON field query on ``raw_json["accession_number"]`` for an exact,
+    unambiguous match that works on both SQLite and PostgreSQL.
+    """
     from sqlalchemy import select
 
     from cam.db.models import Event
 
-    acc_clean = _accession_no_dashes(accession_number)
     stmt = select(Event.id).where(
         Event.source == "sec_edgar",
-        Event.raw_url.contains(acc_clean),
+        Event.raw_json["accession_number"].as_string() == accession_number,
     )
     return db.execute(stmt).first() is not None
 
@@ -452,8 +573,10 @@ def _upsert_filing_event(
     filing: FilingMetadata,
     object_store_path: str,
     entity_id: UUID,
+    *,
+    xbrl_facts: dict | None = None,
 ) -> None:
-    """Insert an Event row for the filing (idempotent via raw_url uniqueness)."""
+    """Insert an Event row for the filing."""
     from cam.db.models import Event
 
     raw_url = _filing_url(filing.cik, filing.accession_number, filing.primary_document)
@@ -472,6 +595,7 @@ def _upsert_filing_event(
             "filing_type": filing.filing_type,
             "primary_document": filing.primary_document,
             "object_store_path": object_store_path,
+            "xbrl_facts": xbrl_facts,
         },
     )
     db.add(event)

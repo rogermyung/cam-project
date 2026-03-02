@@ -94,6 +94,33 @@ def clear_review_queue() -> None:
     _review_queue.clear()
 
 
+def resolve_review_item(raw_name: str, db: Session) -> bool:
+    """Remove a review-queue item by raw name from both queues.
+
+    Removes the matching item from the in-process queue and deletes the
+    corresponding Signal row from the DB queue.
+
+    Returns True if at least one item was found and removed.
+    """
+    # Remove from in-process queue
+    before = len(_review_queue)
+    _review_queue[:] = [item for item in _review_queue if item.raw_name != raw_name]
+    removed_in_process = len(_review_queue) < before
+
+    # Remove from DB queue
+    removed_db = False
+    signals = db.query(Signal).filter(Signal.signal_type == "entity_review_queue").all()
+    for signal in signals:
+        evidence = json.loads(signal.evidence or "{}")
+        if evidence.get("raw_name") == raw_name:
+            db.delete(signal)
+            removed_db = True
+    if removed_db:
+        db.commit()
+
+    return removed_in_process or removed_db
+
+
 # ---------------------------------------------------------------------------
 # Normalisation helpers
 # ---------------------------------------------------------------------------
