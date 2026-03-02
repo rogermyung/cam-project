@@ -10,11 +10,19 @@ Usage:
 import argparse
 import sys
 
-from cam.entity.resolver import get_review_queue
+from cam.entity.resolver import get_review_queue_from_db
 
 
 def cmd_list(_args) -> None:
-    queue = get_review_queue()
+    from cam.db.session import get_session_factory
+
+    Session = get_session_factory()
+    db = Session()
+    try:
+        queue = get_review_queue_from_db(db)
+    finally:
+        db.close()
+
     if not queue:
         print("Review queue is empty.")
         return

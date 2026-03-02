@@ -12,15 +12,16 @@ All thresholds are configurable via environment variables.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 
 from rapidfuzz import fuzz, process
 from sqlalchemy.orm import Session
 
-from cam.db.models import Entity, EntityAlias
+from cam.db.models import Entity, EntityAlias, Signal
 
 logger = logging.getLogger(__name__)
 
@@ -54,15 +55,38 @@ class ReviewQueueItem:
 
 
 # ---------------------------------------------------------------------------
-# In-process review queue (backed by DB in production via Signal table)
+# In-process review queue — used only in tests and same-process callers.
+# Cross-process callers (worker → CLI) must use get_review_queue_from_db().
 # ---------------------------------------------------------------------------
 
 _review_queue: list[ReviewQueueItem] = []
 
 
 def get_review_queue() -> list[ReviewQueueItem]:
-    """Return all items currently awaiting manual review."""
+    """Return items from the in-process queue (same-process / test use only)."""
     return list(_review_queue)
+
+
+def get_review_queue_from_db(db: Session) -> list[ReviewQueueItem]:
+    """
+    Return review-queue items persisted in the Signal table.
+    Use this in the CLI and any cross-process consumer.
+    """
+    signals = db.query(Signal).filter(Signal.signal_type == "entity_review_queue").all()
+    items: list[ReviewQueueItem] = []
+    for s in signals:
+        evidence = json.loads(s.evidence or "{}")
+        items.append(
+            ReviewQueueItem(
+                raw_name=evidence.get("raw_name", ""),
+                source=s.source,
+                confidence=s.score or 0.0,
+                best_match_name=evidence.get("best_match_name"),
+                best_match_entity_id=s.entity_id,
+                created_at=s.created_at or datetime.utcnow(),
+            )
+        )
+    return items
 
 
 def clear_review_queue() -> None:
@@ -231,6 +255,7 @@ def resolve(
                     score,
                     alias_names[idx],
                     alias_entity_ids[idx],
+                    db,
                 )
                 return ResolveResult(
                     entity_id=None,
@@ -286,7 +311,23 @@ def _queue_for_review(
     confidence: float,
     best_match_name: str | None,
     best_match_entity_id: uuid.UUID | None,
+    db: Session,
 ) -> None:
+    """
+    Persist a review-queue item to the Signal table and to the in-process list.
+    Persisting to the DB means items are visible across processes (worker → CLI).
+    """
+    signal = Signal(
+        entity_id=best_match_entity_id,
+        source=source,
+        signal_type="entity_review_queue",
+        signal_date=date.today(),
+        score=confidence,
+        evidence=json.dumps({"raw_name": raw_name, "best_match_name": best_match_name}),
+    )
+    db.add(signal)
+    db.flush()
+
     item = ReviewQueueItem(
         raw_name=raw_name,
         source=source,
@@ -329,19 +370,28 @@ def bulk_resolve(
     hint_field: Optional key containing a hint dict.
     **kwargs:   Passed through to resolve().
     """
-    # Pre-load the full alias table once
+    # Pre-load the full alias table once.
+    # Exact map keyed by (raw_name, source) — mirrors the DB unique constraint
+    # so we never silently pick the wrong entity when the same raw_name appears
+    # under multiple sources.
     all_aliases_rows = db.query(EntityAlias).all()
-    alias_map: dict[str, EntityAlias] = {a.raw_name: a for a in all_aliases_rows}
-    alias_norm_map: dict[str, EntityAlias] = {_normalize(a.raw_name): a for a in all_aliases_rows}
+    alias_map: dict[tuple[str, str], EntityAlias] = {
+        (a.raw_name, a.source): a for a in all_aliases_rows
+    }
+
+    # Normalized map: norm → list of aliases; we prefer same-source matches.
+    alias_norm_map: dict[str, list[EntityAlias]] = {}
+    for a in all_aliases_rows:
+        alias_norm_map.setdefault(_normalize(a.raw_name), []).append(a)
 
     results: list[ResolveResult] = []
     for record in records:
         raw_name = record.get(name_field, "")
         hint = record.get(hint_field) if hint_field else None
 
-        # Fast-path: exact alias hit
-        if raw_name in alias_map:
-            alias = alias_map[raw_name]
+        # Fast-path: exact alias hit for this source
+        if (raw_name, source) in alias_map:
+            alias = alias_map[(raw_name, source)]
             entity = db.get(Entity, alias.entity_id)
             results.append(
                 ResolveResult(
@@ -355,10 +405,11 @@ def bulk_resolve(
             )
             continue
 
-        # Normalised exact-match fast path
+        # Normalised exact-match — prefer same-source, fall back to first alias
         norm = _normalize(raw_name)
         if norm in alias_norm_map:
-            alias = alias_norm_map[norm]
+            candidates = alias_norm_map[norm]
+            alias = next((a for a in candidates if a.source == source), candidates[0])
             entity = db.get(Entity, alias.entity_id)
             add_alias(entity.id, raw_name, source, 1.0, db)
             results.append(

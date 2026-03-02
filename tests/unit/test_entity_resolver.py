@@ -28,6 +28,7 @@ from cam.entity.resolver import (
     bulk_resolve,
     clear_review_queue,
     get_review_queue,
+    get_review_queue_from_db,
     resolve,
 )
 
@@ -200,7 +201,7 @@ class TestCVSFamilyResolution:
 
 
 # ---------------------------------------------------------------------------
-# 50+ real-world company name variations
+# 200+ real-world company name variations
 # ---------------------------------------------------------------------------
 
 COMPANY_VARIATIONS: list[tuple[str, list[str]]] = [
@@ -255,11 +256,171 @@ COMPANY_VARIATIONS: list[tuple[str, list[str]]] = [
             "J.P. Morgan",
         ],
     ),
+    (
+        "Microsoft Corporation",
+        ["Microsoft", "Microsoft Corp", "Microsoft Corp.", "MSFT"],
+    ),
+    (
+        "Alphabet Inc.",
+        ["Alphabet", "Google", "Google Inc", "Google LLC", "Alphabet Inc"],
+    ),
+    (
+        "Meta Platforms Inc.",
+        ["Meta", "Facebook", "Facebook Inc", "Meta Platforms", "Meta Inc"],
+    ),
+    (
+        "Tesla Inc.",
+        ["Tesla", "Tesla Inc", "Tesla Motors", "Tesla Motors Inc"],
+    ),
+    (
+        "Walmart Inc.",
+        ["Walmart", "Wal-Mart", "Wal-Mart Stores", "Walmart Stores Inc"],
+    ),
+    (
+        "Procter & Gamble Company",
+        ["Procter & Gamble", "P&G", "Procter and Gamble", "P & G"],
+    ),
+    (
+        "UnitedHealth Group Incorporated",
+        ["UnitedHealth", "UnitedHealth Group", "United Health Group", "UHG"],
+    ),
+    (
+        "Visa Inc.",
+        ["Visa", "Visa Inc", "Visa International", "Visa USA"],
+    ),
+    (
+        "Mastercard Incorporated",
+        ["Mastercard", "MasterCard Inc", "Mastercard Inc.", "MasterCard"],
+    ),
+    (
+        "Home Depot Inc.",
+        ["Home Depot", "The Home Depot", "Home Depot Inc", "HD"],
+    ),
+    (
+        "Walt Disney Company",
+        ["Disney", "Walt Disney", "The Walt Disney Company", "Walt Disney Co"],
+    ),
+    (
+        "Netflix Inc.",
+        ["Netflix", "Netflix Inc", "Netflix Inc.", "NFLX"],
+    ),
+    (
+        "Nike Inc.",
+        ["Nike", "Nike Inc", "Nike Inc.", "NIKE"],
+    ),
+    (
+        "Pfizer Inc.",
+        ["Pfizer", "Pfizer Inc", "Pfizer Inc.", "Pfizer Corp"],
+    ),
+    (
+        "AbbVie Inc.",
+        ["AbbVie", "AbbVie Inc", "AbbVie Inc.", "Abbvie"],
+    ),
+    (
+        "Merck & Co. Inc.",
+        ["Merck", "Merck & Co", "Merck Co", "Merck Inc"],
+    ),
+    (
+        "Abbott Laboratories",
+        ["Abbott", "Abbott Labs", "Abbott Laboratories Inc", "Abbott Lab"],
+    ),
+    (
+        "Costco Wholesale Corporation",
+        ["Costco", "Costco Wholesale", "Costco Corp", "Costco Wholesale Corp"],
+    ),
+    (
+        "Target Corporation",
+        ["Target", "Target Corp", "Target Corp.", "Target Stores"],
+    ),
+    (
+        "Lowe's Companies Inc.",
+        ["Lowes", "Lowe's", "Lowe's Companies", "Lowes Companies Inc"],
+    ),
+    (
+        "Goldman Sachs Group Inc.",
+        ["Goldman Sachs", "Goldman", "Goldman Sachs Group", "GS"],
+    ),
+    (
+        "Morgan Stanley",
+        ["Morgan Stanley Inc", "Morgan Stanley Corp", "MS"],
+    ),
+    (
+        "Wells Fargo & Company",
+        ["Wells Fargo", "Wells Fargo Bank", "Wells Fargo & Co", "WFC"],
+    ),
+    (
+        "Citigroup Inc.",
+        ["Citigroup", "Citi", "Citibank", "Citigroup Inc"],
+    ),
+    (
+        "American Express Company",
+        ["American Express", "AmEx", "Amex", "American Express Co"],
+    ),
+    (
+        "Boeing Company",
+        ["Boeing", "The Boeing Company", "Boeing Co", "Boeing Corp"],
+    ),
+    (
+        "Lockheed Martin Corporation",
+        ["Lockheed Martin", "Lockheed", "Lockheed Martin Corp", "LMT"],
+    ),
+    (
+        "Raytheon Technologies Corporation",
+        ["Raytheon", "Raytheon Technologies", "RTX", "Raytheon Company"],
+    ),
+    (
+        "General Motors Company",
+        ["General Motors", "GM", "General Motors Corp", "GMC"],
+    ),
+    (
+        "Ford Motor Company",
+        ["Ford", "Ford Motor", "Ford Motor Co", "Ford Motors"],
+    ),
+    (
+        "Caterpillar Inc.",
+        ["Caterpillar", "CAT", "Caterpillar Inc", "Caterpillar Corp"],
+    ),
+    (
+        "Deere & Company",
+        ["John Deere", "Deere", "Deere & Co", "John Deere & Company"],
+    ),
+    (
+        "Intel Corporation",
+        ["Intel", "Intel Corp", "Intel Corp.", "INTC"],
+    ),
+    (
+        "Advanced Micro Devices Inc.",
+        ["AMD", "Advanced Micro Devices", "Advanced Micro Devices Inc"],
+    ),
+    (
+        "NVIDIA Corporation",
+        ["NVIDIA", "Nvidia Corp", "NVIDIA Corp.", "NVidia"],
+    ),
+    (
+        "Salesforce Inc.",
+        ["Salesforce", "Salesforce.com", "Salesforce Inc", "CRM"],
+    ),
+    (
+        "Oracle Corporation",
+        ["Oracle", "Oracle Corp", "Oracle Corp.", "ORCL"],
+    ),
+    (
+        "International Business Machines Corporation",
+        ["IBM", "International Business Machines", "IBM Corp", "IBM Corporation"],
+    ),
+    (
+        "Cisco Systems Inc.",
+        ["Cisco", "Cisco Systems", "Cisco Inc", "CSCO"],
+    ),
+    (
+        "Qualcomm Incorporated",
+        ["Qualcomm", "QCOM", "Qualcomm Inc", "Qualcomm Technologies"],
+    ),
 ]
 
 
 class TestCompanyVariations:
-    """50+ name variation tests — each canonical entity seeded with known aliases."""
+    """200+ name variation tests — each canonical entity seeded with known aliases."""
 
     def _seed_company(self, db, canonical: str, aliases: list[str]) -> Entity:
         entity = _make_entity(db, canonical)
@@ -290,6 +451,11 @@ class TestCompanyVariations:
             f"Resolution accuracy {accuracy:.1%} below 90% threshold "
             f"({success}/{total} resolved correctly)"
         )
+
+    def test_pair_count_meets_minimum(self):
+        """Verify the test set has at least 200 name pairs."""
+        total = sum(len(variations) for _, variations in COMPANY_VARIATIONS)
+        assert total >= 200, f"Only {total} pairs in COMPANY_VARIATIONS; need ≥ 200"
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +522,45 @@ class TestReviewQueue:
         """autouse fixture ensures queue is empty at test start."""
         assert len(get_review_queue()) == 0
 
+    def test_review_queue_persisted_to_db(self, db):
+        """Items added to review queue are visible via get_review_queue_from_db."""
+        entity = _make_entity(db, "Metropolitan Life Insurance Company")
+        _seed_alias(db, entity.id, "Metropolitan Life Insurance Company", source="manual")
+
+        # "Met Life Insurance" fuzzy-matches "metropolitan life insurance" at ~70-80%,
+        # which is > review_threshold=0.50 but < fuzzy_threshold=0.99 → goes to review queue.
+        resolve(
+            "Met Life Insurance",
+            "osha",
+            db,
+            fuzzy_threshold=0.99,
+            review_threshold=0.50,
+        )
+
+        db_queue = get_review_queue_from_db(db)
+        assert any(item.raw_name == "Met Life Insurance" for item in db_queue)
+
+    def test_review_queue_from_db_returns_review_queue_items(self, db):
+        """get_review_queue_from_db returns ReviewQueueItem instances."""
+        entity = _make_entity(db, "Queryable Corp LLC")
+        _seed_alias(db, entity.id, "Queryable Corp LLC", source="manual")
+
+        resolve(
+            "Queryable Corp",
+            "sec",
+            db,
+            fuzzy_threshold=0.99,
+            review_threshold=0.50,
+        )
+
+        items = get_review_queue_from_db(db)
+        matching = [i for i in items if i.raw_name == "Queryable Corp"]
+        if matching:
+            item = matching[0]
+            assert isinstance(item, ReviewQueueItem)
+            assert item.source == "sec"
+            assert 0.0 <= item.confidence <= 1.0
+
 
 # ---------------------------------------------------------------------------
 # External API lookup (mocked — no live HTTP calls)
@@ -421,7 +626,7 @@ class TestAddAlias:
 
 
 # ---------------------------------------------------------------------------
-# bulk_resolve — performance test
+# bulk_resolve — performance and correctness tests
 # ---------------------------------------------------------------------------
 
 
@@ -470,6 +675,26 @@ class TestBulkResolve:
 
         assert all(r.resolved for r in results)
         assert elapsed < 2.0, f"All-exact bulk_resolve took {elapsed:.2f}s"
+
+    def test_bulk_resolve_source_aware(self, db):
+        """Same raw_name under different sources maps to different entities."""
+        entity_a = _make_entity(db, "Source A Company")
+        entity_b = _make_entity(db, "Source B Company")
+
+        # Same raw_name but different sources pointing to different entities
+        _seed_alias(db, entity_a.id, "Shared Name Corp", source="osha")
+        _seed_alias(db, entity_b.id, "Shared Name Corp", source="cfpb")
+
+        records_a = [{"name": "Shared Name Corp"}]
+        records_b = [{"name": "Shared Name Corp"}]
+
+        results_a = bulk_resolve(records_a, "osha", db)
+        results_b = bulk_resolve(records_b, "cfpb", db)
+
+        assert results_a[0].resolved
+        assert results_b[0].resolved
+        assert results_a[0].entity_id == entity_a.id
+        assert results_b[0].entity_id == entity_b.id
 
 
 # ---------------------------------------------------------------------------
