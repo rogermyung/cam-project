@@ -12,7 +12,7 @@ import json
 import uuid
 from datetime import date
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -21,9 +21,7 @@ from sqlalchemy.orm import sessionmaker
 
 from cam.db.models import Base, Entity, Event
 from cam.ingestion.edgar import (
-    FilingDocument,
     FilingMetadata,
-    IngestResult,
     _accession_no_dashes,
     _filing_in_db,
     _filing_url,
@@ -418,8 +416,6 @@ class TestDownloadFiling:
         assert doc.object_store_path == expected_key
 
     def test_raises_on_http_error(self):
-        from botocore.exceptions import ClientError
-
         filing = _apple_filing()
         client = MagicMock(spec=httpx.Client)
         client.get.side_effect = httpx.HTTPStatusError(
