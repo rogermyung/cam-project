@@ -1,0 +1,6 @@
+[github_app]
+# This ensures it runs the first time it becomes "Ready"
+pr_commands = ["/describe", "/review", "/improve"]
+# This ensures it runs again if you push more fixes while it's "Ready"
+handle_push_trigger = true
+push_commands = ["/review"]

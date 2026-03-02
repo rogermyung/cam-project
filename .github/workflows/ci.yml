@@ -1,0 +1,209 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["main"]
+
+# write implies read — satisfies both dorny/paths-filter and gh pr ready.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # ------------------------------------------------------------------
+  # Detect which file categories changed so downstream jobs can skip
+  # when their inputs haven't changed.
+  # ------------------------------------------------------------------
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      ci: ${{ steps.filter.outputs.ci }}
+      docker: ${{ steps.filter.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            python:
+              - '**/*.py'
+              - 'requirements*.txt'
+              - 'pyproject.toml'
+            ci:
+              - '.github/workflows/**'
+            docker:
+              - 'Dockerfile'
+              - 'docker-compose.yml'
+
+  # ------------------------------------------------------------------
+  # Lint — ruff check and format. uv makes the install fast.
+  # ------------------------------------------------------------------
+  lint:
+    needs: changes
+    if: needs.changes.outputs.python == 'true' || needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "requirements*.txt"
+
+      - name: Install ruff
+        run: uv pip install --system ruff
+
+      - name: Ruff — lint
+        run: ruff check .
+
+      - name: Ruff — format check
+        run: ruff format --check .
+
+  # ------------------------------------------------------------------
+  # Test — runs after lint. uv installs full deps; services on localhost.
+  # ------------------------------------------------------------------
+  test:
+    needs: [changes, lint]
+    if: needs.changes.outputs.python == 'true' || needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: cam
+          POSTGRES_PASSWORD: cam
+          POSTGRES_DB: cam
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://cam:cam@localhost:5432/cam
+      REDIS_URL: redis://localhost:6379/0
+      EDGAR_USER_AGENT: ci@cam-project.org
+      S3_BUCKET: cam-documents
+      S3_ENDPOINT: http://localhost:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      API_AUTH_TOKEN: test-token
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "requirements*.txt"
+
+      - name: Install dependencies
+        run: uv pip install --system -r requirements-dev.txt
+
+      - name: Run Alembic migrations
+        run: alembic upgrade head
+
+      - name: Run Alembic downgrade (reversibility check)
+        run: alembic downgrade -1
+
+      - name: Run Alembic upgrade again
+        run: alembic upgrade head
+
+      - name: Create test database
+        # Tests always use cam_test to prevent destructive ops (drop_all,
+        # downgrade) from touching the migration DB (cam).
+        run: PGPASSWORD=cam psql -h localhost -U cam -d cam -c "CREATE DATABASE cam_test OWNER cam;"
+
+      - name: Run tests
+        run: pytest
+
+      - name: Upload HTML coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-html
+          path: htmlcov/
+
+      - name: Upload XML coverage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  # ------------------------------------------------------------------
+  # Semgrep — static analysis, runs in parallel with test after lint.
+  # No external account or server required.
+  # ------------------------------------------------------------------
+  semgrep:
+    needs: [changes, lint]
+    if: needs.changes.outputs.python == 'true' || needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "requirements*.txt"
+
+      - name: Install semgrep
+        run: uv pip install --system semgrep
+
+      - name: Run Semgrep
+        run: semgrep --config=auto --sarif --output=semgrep.sarif cam/
+
+  # ------------------------------------------------------------------
+  # Qodo — mark the PR ready for review after tests pass.
+  # .qodo-merge.toml configures Qodo to run /describe /review /improve
+  # on the ready-for-review event, and /review on subsequent pushes.
+  # ------------------------------------------------------------------
+  qodo:
+    needs: test
+    if: github.event_name == 'pull_request' && needs.test.result == 'success'
+    runs-on: ubuntu-latest
+
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Mark PR ready for review
+        env:
+          GH_TOKEN: ${{ secrets.PR_KEY }}
+        run: gh pr ready ${{ github.event.pull_request.number }} --repo ${{ github.repository }}
