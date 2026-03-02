@@ -1,0 +1,56 @@
+UNITED STATES
+SECURITIES AND EXCHANGE COMMISSION
+Washington, D.C. 20549
+
+FORM 10-K
+
+ANNUAL REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE
+SECURITIES EXCHANGE ACT OF 1934
+
+For the fiscal year ended December 30, 2023
+
+Commission File Number: 001-36743
+
+APPLE INC.
+(Exact name of Registrant as specified in its charter)
+
+California                    94-2404110
+(State or other jurisdiction of          (I.R.S. Employer Identification No.)
+incorporation or organization)
+
+One Apple Park Way
+Cupertino, California 95014
+(Address of principal executive offices) (Zip Code)
+
+(408) 996-1010
+(Registrant's telephone number, including area code)
+
+Securities registered pursuant to Section 12(b) of the Act:
+Title of each class: Common Stock, $0.00001 par value
+Trading symbol(s): AAPL
+Name of exchange: The Nasdaq Stock Market LLC
+
+RISK FACTORS
+
+The following risk factors and other information included in this Annual Report should be carefully
+considered. The risks and uncertainties described below are not the only ones the Company faces.
+
+Macroeconomic and Industry Risks
+
+The Company's operations and performance depend significantly on worldwide economic conditions.
+
+The Company has international operations with sales outside the U.S. representing a majority of
+the Company's total net sales. In addition, the Company's supply chain is global. As a result,
+the Company's operations and performance depend significantly on worldwide economic conditions.
+
+Global and regional economic conditions, including the impact of recessions, inflation, higher
+interest rates, slower growth or decline in the markets the Company operates in, and actual or
+anticipated changes in global trade policies, such as import or export restrictions, tariffs, and
+other trade barriers, could adversely affect the demand for the Company's products and services,
+the availability and cost of components and raw materials, and the Company's ability to generate
+revenue and profit.
+
+ITEM 1. BUSINESS
+
+The Company designs, manufactures and markets smartphones, personal computers, tablets, wearables
+and accessories, and sells a variety of related services.

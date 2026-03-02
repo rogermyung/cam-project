@@ -1,0 +1,56 @@
+{
+  "cik": "0001018724",
+  "entityType": "operating",
+  "sic": "5961",
+  "sicDescription": "Catalog and Mail-Order Houses",
+  "name": "Amazon.com Inc.",
+  "tickers": ["AMZN"],
+  "exchanges": ["Nasdaq"],
+  "filings": {
+    "recent": {
+      "accessionNumber": [
+        "0001018724-24-000008",
+        "0001018724-23-000016",
+        "0001018724-22-000012",
+        "0001018724-24-000002",
+        "0001018724-23-000055"
+      ],
+      "filingDate": [
+        "2024-02-02",
+        "2023-02-03",
+        "2022-02-04",
+        "2024-01-31",
+        "2023-10-27"
+      ],
+      "form": [
+        "10-K",
+        "10-K",
+        "10-K",
+        "8-K",
+        "8-K"
+      ],
+      "primaryDocument": [
+        "amzn-20231231.htm",
+        "amzn-20221231.htm",
+        "amzn-20211231.htm",
+        "amzn-20240131.htm",
+        "amzn-20231027.htm"
+      ],
+      "primaryDocDescription": [
+        "10-K",
+        "10-K",
+        "10-K",
+        "8-K",
+        "8-K"
+      ]
+    },
+    "files": [
+      {
+        "name": "CIK0001018724-submissions-001.json",
+        "filingCount": 40,
+        "filingFrom": "2000-01-01",
+        "filingTo": "2015-12-31"
+      }
+    ]
+  }
+}

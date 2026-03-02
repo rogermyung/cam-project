@@ -1,0 +1,52 @@
+{
+  "cik": "0000320193",
+  "entityName": "Apple Inc.",
+  "facts": {
+    "us-gaap": {
+      "Revenues": {
+        "label": "Revenues",
+        "description": "Amount of revenue recognized from goods sold, services rendered, insurance premiums, or other activities.",
+        "units": {
+          "USD": [
+            {"end": "2021-09-25", "val": 365817000000, "form": "10-K", "filed": "2021-10-29"},
+            {"end": "2022-09-24", "val": 394328000000, "form": "10-K", "filed": "2022-10-28"},
+            {"end": "2023-09-30", "val": 383285000000, "form": "10-K", "filed": "2023-11-03"}
+          ]
+        }
+      },
+      "Assets": {
+        "label": "Assets",
+        "description": "Sum of the carrying amounts as of the balance sheet date of all assets.",
+        "units": {
+          "USD": [
+            {"end": "2021-09-25", "val": 351002000000, "form": "10-K", "filed": "2021-10-29"},
+            {"end": "2022-09-24", "val": 352755000000, "form": "10-K", "filed": "2022-10-28"},
+            {"end": "2023-09-30", "val": 352583000000, "form": "10-K", "filed": "2023-11-03"}
+          ]
+        }
+      },
+      "NetIncomeLoss": {
+        "label": "Net Income (Loss) Attributable to Parent",
+        "description": "The portion of profit or loss for the period, net of income taxes.",
+        "units": {
+          "USD": [
+            {"end": "2021-09-25", "val": 94680000000, "form": "10-K", "filed": "2021-10-29"},
+            {"end": "2022-09-24", "val": 99803000000, "form": "10-K", "filed": "2022-10-28"},
+            {"end": "2023-09-30", "val": 96995000000, "form": "10-K", "filed": "2023-11-03"}
+          ]
+        }
+      },
+      "StockholdersEquity": {
+        "label": "Stockholders' Equity Attributable to Parent",
+        "description": "Total of all stockholders' equity items.",
+        "units": {
+          "USD": [
+            {"end": "2021-09-25", "val": 63090000000, "form": "10-K", "filed": "2021-10-29"},
+            {"end": "2022-09-24", "val": 50672000000, "form": "10-K", "filed": "2022-10-28"},
+            {"end": "2023-09-30", "val": 62146000000, "form": "10-K", "filed": "2023-11-03"}
+          ]
+        }
+      }
+    }
+  }
+}

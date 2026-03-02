@@ -3,14 +3,14 @@ CLI for managing the manual entity review queue.
 
 Usage:
     python -m cam.entity.cli list
-    python -m cam.entity.cli accept <raw_name> <entity_id>
+    python -m cam.entity.cli accept <raw_name> <entity_id> [--source SOURCE]
     python -m cam.entity.cli reject <raw_name>
 """
 
 import argparse
 import sys
 
-from cam.entity.resolver import get_review_queue_from_db
+from cam.entity.resolver import get_review_queue_from_db, resolve_review_item
 
 
 def cmd_list(_args) -> None:
@@ -53,7 +53,26 @@ def cmd_accept(args) -> None:
             db=db,
         )
         db.commit()
+        # Remove the item from the review queue so the queue shrinks over time
+        resolve_review_item(args.raw_name, db)
         print(f"Alias added: {args.raw_name!r} -> {args.entity_id}")
+    finally:
+        db.close()
+
+
+def cmd_reject(args) -> None:
+    """Reject a review item: remove it from the queue without creating an alias."""
+    from cam.db.session import get_session_factory
+
+    Session = get_session_factory()
+    db = Session()
+    try:
+        removed = resolve_review_item(args.raw_name, db)
+        if removed:
+            print(f"Rejected and removed from queue: {args.raw_name!r}")
+        else:
+            print(f"No queue item found for: {args.raw_name!r}", file=sys.stderr)
+            sys.exit(1)
     finally:
         db.close()
 
@@ -72,6 +91,9 @@ def build_parser() -> argparse.ArgumentParser:
     accept_p.add_argument("entity_id", help="UUID of the canonical entity")
     accept_p.add_argument("--source", default="manual", help="Source tag for the alias")
 
+    reject_p = sub.add_parser("reject", help="Reject a match and remove from queue")
+    reject_p.add_argument("raw_name", help="The raw company name to remove")
+
     return parser
 
 
@@ -82,6 +104,8 @@ def main(argv=None) -> None:
         cmd_list(args)
     elif args.command == "accept":
         cmd_accept(args)
+    elif args.command == "reject":
+        cmd_reject(args)
     else:
         parser.print_help()
         sys.exit(1)

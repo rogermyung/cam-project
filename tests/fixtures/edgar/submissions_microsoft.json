@@ -1,0 +1,49 @@
+{
+  "cik": "0000789019",
+  "entityType": "operating",
+  "sic": "7372",
+  "sicDescription": "Prepackaged Software",
+  "name": "Microsoft Corp",
+  "tickers": ["MSFT"],
+  "exchanges": ["Nasdaq"],
+  "filings": {
+    "recent": {
+      "accessionNumber": [
+        "0000789019-23-000075",
+        "0000789019-22-000072",
+        "0000789019-21-000052",
+        "0000789019-23-000014",
+        "0000789019-23-000039"
+      ],
+      "filingDate": [
+        "2023-07-27",
+        "2022-07-28",
+        "2021-07-29",
+        "2023-01-24",
+        "2023-04-27"
+      ],
+      "form": [
+        "10-K",
+        "10-K",
+        "10-K",
+        "8-K",
+        "DEF 14A"
+      ],
+      "primaryDocument": [
+        "msft-20230630.htm",
+        "msft-20220630.htm",
+        "msft-20210630.htm",
+        "msft-20230124.htm",
+        "msft-20230427.htm"
+      ],
+      "primaryDocDescription": [
+        "10-K",
+        "10-K",
+        "10-K",
+        "8-K",
+        "DEF 14A"
+      ]
+    },
+    "files": []
+  }
+}

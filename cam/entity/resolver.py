@@ -94,6 +94,33 @@ def clear_review_queue() -> None:
     _review_queue.clear()
 
 
+def resolve_review_item(raw_name: str, db: Session) -> bool:
+    """Remove a review-queue item by raw name from both queues.
+
+    Removes the matching item from the in-process queue and deletes the
+    corresponding Signal row from the DB queue.
+
+    Returns True if at least one item was found and removed.
+    """
+    # Remove from in-process queue
+    before = len(_review_queue)
+    _review_queue[:] = [item for item in _review_queue if item.raw_name != raw_name]
+    removed_in_process = len(_review_queue) < before
+
+    # Remove from DB queue
+    removed_db = False
+    signals = db.query(Signal).filter(Signal.signal_type == "entity_review_queue").all()
+    for signal in signals:
+        evidence = json.loads(signal.evidence or "{}")
+        if evidence.get("raw_name") == raw_name:
+            db.delete(signal)
+            removed_db = True
+    if removed_db:
+        db.commit()
+
+    return removed_in_process or removed_db
+
+
 # ---------------------------------------------------------------------------
 # Normalisation helpers
 # ---------------------------------------------------------------------------
@@ -339,7 +366,12 @@ def _queue_for_review(
 ) -> None:
     """
     Persist a review-queue item to the Signal table and to the in-process list.
-    Persisting to the DB means items are visible across processes (worker → CLI).
+
+    Flushes (but does not commit) so that the new row participates in the
+    caller's transaction.  The caller is responsible for committing so that
+    other processes (e.g. the CLI reading the queue from a separate DB
+    connection) can see the rows.  bulk_resolve() issues a single commit after
+    the loop; single-record callers of resolve() should commit themselves.
     """
     signal = Signal(
         entity_id=best_match_entity_id,
@@ -451,6 +483,10 @@ def bulk_resolve(
         # Slow path: full resolve (fuzzy + optional API)
         result = resolve(raw_name, source, db, hint=hint, **kwargs)
         results.append(result)
+
+    # Commit once for the whole batch so any review-queue Signal rows written
+    # by _queue_for_review() become visible to other processes (e.g. the CLI).
+    db.commit()
 
     return results
 
