@@ -158,6 +158,36 @@ class TestExactMatch:
         assert result.resolved
         assert result.entity_id == entity.id
 
+    def test_normalised_match_prefers_same_source(self, db):
+        """
+        When the same raw_name (or a normalised equivalent) exists under two
+        different sources pointing to DIFFERENT entities, resolve() must return
+        the entity that belongs to the caller's source — not the first DB row.
+
+        This is the correctness hazard fixed in _exact_normalised_match():
+        the (raw_name, source) DB unique constraint allows the same normalised
+        form to map to two distinct entities, so source preference is required.
+        """
+        entity_osha = _make_entity(db, "Sunrise Energy OSHA Entity")
+        entity_cfpb = _make_entity(db, "Sunrise Energy CFPB Entity")
+
+        # Both sources have an alias that normalises to "sunrise energy"
+        _seed_alias(db, entity_osha.id, "Sunrise Energy Corp", source="osha")
+        _seed_alias(db, entity_cfpb.id, "Sunrise Energy Corp", source="cfpb")
+
+        # "Sunrise Energy Inc" normalises to "sunrise energy" — same as the seeded aliases
+        result_osha = resolve("Sunrise Energy Inc", "osha", db)
+        result_cfpb = resolve("Sunrise Energy Inc", "cfpb", db)
+
+        assert result_osha.resolved, "osha resolve should succeed"
+        assert result_cfpb.resolved, "cfpb resolve should succeed"
+        assert result_osha.entity_id == entity_osha.id, (
+            "osha resolve should return the osha entity, not the cfpb entity"
+        )
+        assert result_cfpb.entity_id == entity_cfpb.id, (
+            "cfpb resolve should return the cfpb entity, not the osha entity"
+        )
+
 
 # ---------------------------------------------------------------------------
 # CVS family — the canonical acceptance test

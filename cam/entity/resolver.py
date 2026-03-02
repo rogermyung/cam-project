@@ -200,8 +200,9 @@ def resolve(
             raw_name=raw_name,
         )
 
-    # Also check normalised form against all aliases
-    normalised_alias = _exact_normalised_match(normalised, db)
+    # Also check normalised form against all aliases — pass source so we
+    # prefer same-source aliases when multiple sources share a normalised name.
+    normalised_alias = _exact_normalised_match(normalised, source, db)
     if normalised_alias:
         entity = db.get(Entity, normalised_alias.entity_id)
         # Persist alias for fast future lookups
@@ -217,21 +218,35 @@ def resolve(
 
     # ------------------------------------------------------------------
     # Step 2: fuzzy match against all known aliases
+    #
+    # Fetch source alongside raw_name so we can prefer same-source aliases
+    # when multiple aliases score equally — mirroring bulk_resolve behaviour.
     # ------------------------------------------------------------------
-    all_aliases = db.query(EntityAlias.raw_name, EntityAlias.entity_id).all()
+    all_aliases = db.query(EntityAlias.raw_name, EntityAlias.entity_id, EntityAlias.source).all()
     if all_aliases:
         alias_names = [a.raw_name for a in all_aliases]
         alias_entity_ids = [a.entity_id for a in all_aliases]
+        alias_sources = [a.source for a in all_aliases]
         alias_normalised = [_normalize(n) for n in alias_names]
 
-        result = process.extractOne(
+        # Extract all matches at the best score so we can apply source preference.
+        top_results = process.extract(
             normalised,
             alias_normalised,
             scorer=fuzz.token_sort_ratio,
             score_cutoff=0,
+            limit=None,
         )
-        if result:
-            matched_normalised, score_raw, idx = result
+        if top_results:
+            best_score_raw = top_results[0][1]
+            # Collect all candidates tied at the best score
+            top_candidates = [r for r in top_results if r[1] == best_score_raw]
+            # Prefer same-source candidate; fall back to first (highest-score) match
+            chosen = next(
+                (r for r in top_candidates if alias_sources[r[2]] == source),
+                top_results[0],
+            )
+            _, score_raw, idx = chosen
             score = score_raw / 100.0  # rapidfuzz returns 0-100
 
             if score >= fuzzy_threshold:
@@ -296,13 +311,22 @@ def resolve(
     )
 
 
-def _exact_normalised_match(normalised: str, db: Session) -> EntityAlias | None:
-    """Check whether any alias normalises to the same string."""
+def _exact_normalised_match(normalised: str, source: str, db: Session) -> EntityAlias | None:
+    """
+    Return the best alias whose raw_name normalises to `normalised`.
+
+    Prefers an alias from the same `source` — mirroring bulk_resolve behaviour
+    and respecting the (raw_name, source) unique constraint which allows the same
+    raw_name to point to *different* entities under different sources.  Falls back
+    to the first match when no same-source alias exists.
+    """
     all_aliases = db.query(EntityAlias).all()
-    for alias in all_aliases:
-        if _normalize(alias.raw_name) == normalised:
-            return alias
-    return None
+    candidates = [a for a in all_aliases if _normalize(a.raw_name) == normalised]
+    if not candidates:
+        return None
+    # Prefer same-source alias; fall back to the first candidate
+    same_source = next((a for a in candidates if a.source == source), None)
+    return same_source or candidates[0]
 
 
 def _queue_for_review(
