@@ -52,7 +52,12 @@ tests/
    - Idempotency required for all ingestion functions (running twice produces same DB state)
 6. **Write tests** meeting the Test Requirements in PLAN.md. Minimum 80% coverage; 100% for M13 scorer/alert logic.
 7. **Run tests locally**: `PYTHONPATH=. .venv/bin/python -m pytest tests/unit/test_<module>.py -v --no-cov`
-8. **Commit** with message `M<N>: <Title> — <brief summary>\n\nCloses #<issue>\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`
+8. **Run ruff before every commit** (both commands required):
+   ```bash
+   .venv/bin/ruff check <files> --fix   # lint and auto-fix
+   .venv/bin/ruff format <files>         # format
+   ```
+9. **Commit** with message `M<N>: <Title> — <brief summary>\n\nCloses #<issue>\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`
 9. **Push** and **create a PR** with `gh pr create --base main` including a summary and test plan.
 10. **Update the GitHub issue** with a completion comment listing delivered items.
 
@@ -99,6 +104,10 @@ uv pip install -r requirements-dev.txt
 
 # Run tests (no DB needed for most)
 PYTHONPATH=. .venv/bin/python -m pytest tests/unit/ -v --no-cov
+
+# Lint and format (run both before every commit)
+.venv/bin/ruff check <files> --fix
+.venv/bin/ruff format <files>
 
 # Run migrations (requires postgres)
 DATABASE_URL=postgresql://cam:cam@localhost:5432/cam alembic upgrade head
