@@ -19,7 +19,7 @@ env/
 .coverage
 htmlcov/
 .tox/
-
+coverage.xml
 # Models (large files)
 models/
 *.bin

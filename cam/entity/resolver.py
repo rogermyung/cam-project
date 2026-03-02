@@ -366,7 +366,9 @@ def _queue_for_review(
 ) -> None:
     """
     Persist a review-queue item to the Signal table and to the in-process list.
-    Persisting to the DB means items are visible across processes (worker → CLI).
+
+    Commits immediately so the row is visible to other processes (e.g. the CLI
+    reading the queue from a separate DB connection).
     """
     signal = Signal(
         entity_id=best_match_entity_id,
@@ -377,7 +379,7 @@ def _queue_for_review(
         evidence=json.dumps({"raw_name": raw_name, "best_match_name": best_match_name}),
     )
     db.add(signal)
-    db.flush()
+    db.commit()
 
     item = ReviewQueueItem(
         raw_name=raw_name,
