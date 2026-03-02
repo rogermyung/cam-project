@@ -31,7 +31,6 @@ from cam.entity.resolver import (
     resolve,
 )
 
-
 # ---------------------------------------------------------------------------
 # Test fixtures
 # ---------------------------------------------------------------------------
@@ -71,7 +70,7 @@ def _make_entity(db, name: str, ticker: str = None) -> Entity:
 
 def _seed_alias(db, entity_id, raw_name: str, source: str = "manual") -> EntityAlias:
     alias = EntityAlias(
-        id=str(uuid.uuid4()),
+        id=uuid.uuid4(),
         entity_id=entity_id,
         raw_name=raw_name,
         source=source,
@@ -281,9 +280,7 @@ class TestCompanyVariations:
             entity = entities[canonical]
             for raw in variations:
                 total += 1
-                result = resolve(
-                    raw, "test", db, fuzzy_threshold=0.60, review_threshold=0.40
-                )
+                result = resolve(raw, "test", db, fuzzy_threshold=0.60, review_threshold=0.40)
                 if result.resolved and result.entity_id == entity.id:
                     success += 1
 
@@ -326,7 +323,7 @@ class TestReviewQueue:
             "Meridian Financials",
             "osha",
             db,
-            fuzzy_threshold=0.99,   # extremely strict — forces into review queue
+            fuzzy_threshold=0.99,  # extremely strict — forces into review queue
             review_threshold=0.50,
         )
         assert result.needs_review
@@ -409,9 +406,7 @@ class TestAddAlias:
         add_alias(entity.id, "Persist Corporation", "manual", 1.0, db)
 
         alias = (
-            db.query(EntityAlias)
-            .filter_by(raw_name="Persist Corporation", source="manual")
-            .first()
+            db.query(EntityAlias).filter_by(raw_name="Persist Corporation", source="manual").first()
         )
         assert alias is not None
         assert alias.entity_id == entity.id
@@ -421,11 +416,7 @@ class TestAddAlias:
         add_alias(entity.id, "Idempotent Corp", "manual", 1.0, db)
         add_alias(entity.id, "Idempotent Corp", "manual", 0.9, db)  # duplicate
 
-        count = (
-            db.query(EntityAlias)
-            .filter_by(raw_name="Idempotent Corp", source="manual")
-            .count()
-        )
+        count = db.query(EntityAlias).filter_by(raw_name="Idempotent Corp", source="manual").count()
         assert count == 1
 
 

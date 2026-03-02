@@ -10,7 +10,7 @@ Usage:
 import argparse
 import sys
 
-from cam.entity.resolver import get_review_queue, clear_review_queue
+from cam.entity.resolver import get_review_queue
 
 
 def cmd_list(_args) -> None:
@@ -30,11 +30,10 @@ def cmd_list(_args) -> None:
 def cmd_accept(args) -> None:
     """Accept a review item: create an alias mapping raw_name to entity_id."""
     import uuid
-    from cam.config import get_settings
+
     from cam.db.session import get_session_factory
     from cam.entity.resolver import add_alias
 
-    settings = get_settings()
     Session = get_session_factory()
     db = Session()
     try:

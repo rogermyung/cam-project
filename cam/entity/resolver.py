@@ -16,7 +16,6 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
 
 from rapidfuzz import fuzz, process
 from sqlalchemy.orm import Session
@@ -32,10 +31,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ResolveResult:
-    entity_id: Optional[uuid.UUID]
-    canonical_name: Optional[str]
-    confidence: float          # 0.0 to 1.0
-    method: str                # 'exact', 'fuzzy', 'api', 'unresolved'
+    entity_id: uuid.UUID | None
+    canonical_name: str | None
+    confidence: float  # 0.0 to 1.0
+    method: str  # 'exact', 'fuzzy', 'api', 'unresolved'
     needs_review: bool
     raw_name: str = ""
 
@@ -49,8 +48,8 @@ class ReviewQueueItem:
     raw_name: str
     source: str
     confidence: float
-    best_match_name: Optional[str]
-    best_match_entity_id: Optional[uuid.UUID]
+    best_match_name: str | None
+    best_match_entity_id: uuid.UUID | None
     created_at: datetime = field(default_factory=datetime.utcnow)
 
 
@@ -76,12 +75,37 @@ def clear_review_queue() -> None:
 # ---------------------------------------------------------------------------
 
 _STRIP_SUFFIXES = (
-    " inc", " inc.", " incorporated", " corp", " corp.", " corporation",
-    " llc", " l.l.c.", " ltd", " ltd.", " limited", " co", " co.",
-    " company", " lp", " l.p.", " plc", " p.l.c.", " pllc",
-    " group", " holdings", " holding", " international", " intl",
-    " technologies", " technology", " tech", " services", " solutions",
-    " enterprises", " partners",
+    " inc",
+    " inc.",
+    " incorporated",
+    " corp",
+    " corp.",
+    " corporation",
+    " llc",
+    " l.l.c.",
+    " ltd",
+    " ltd.",
+    " limited",
+    " co",
+    " co.",
+    " company",
+    " lp",
+    " l.p.",
+    " plc",
+    " p.l.c.",
+    " pllc",
+    " group",
+    " holdings",
+    " holding",
+    " international",
+    " intl",
+    " technologies",
+    " technology",
+    " tech",
+    " services",
+    " solutions",
+    " enterprises",
+    " partners",
 )
 
 
@@ -108,7 +132,7 @@ def resolve(
     raw_name: str,
     source: str,
     db: Session,
-    hint: Optional[dict] = None,
+    hint: dict | None = None,
     fuzzy_threshold: float = 0.85,
     review_threshold: float = 0.65,
     external_lookup_fn=None,
@@ -247,7 +271,7 @@ def resolve(
     )
 
 
-def _exact_normalised_match(normalised: str, db: Session) -> Optional[EntityAlias]:
+def _exact_normalised_match(normalised: str, db: Session) -> EntityAlias | None:
     """Check whether any alias normalises to the same string."""
     all_aliases = db.query(EntityAlias).all()
     for alias in all_aliases:
@@ -260,8 +284,8 @@ def _queue_for_review(
     raw_name: str,
     source: str,
     confidence: float,
-    best_match_name: Optional[str],
-    best_match_entity_id: Optional[uuid.UUID],
+    best_match_name: str | None,
+    best_match_entity_id: uuid.UUID | None,
 ) -> None:
     item = ReviewQueueItem(
         raw_name=raw_name,
@@ -289,7 +313,7 @@ def bulk_resolve(
     source: str,
     db: Session,
     name_field: str = "name",
-    hint_field: Optional[str] = None,
+    hint_field: str | None = None,
     **kwargs,
 ) -> list[ResolveResult]:
     """
@@ -308,9 +332,7 @@ def bulk_resolve(
     # Pre-load the full alias table once
     all_aliases_rows = db.query(EntityAlias).all()
     alias_map: dict[str, EntityAlias] = {a.raw_name: a for a in all_aliases_rows}
-    alias_norm_map: dict[str, EntityAlias] = {
-        _normalize(a.raw_name): a for a in all_aliases_rows
-    }
+    alias_norm_map: dict[str, EntityAlias] = {_normalize(a.raw_name): a for a in all_aliases_rows}
 
     results: list[ResolveResult] = []
     for record in records:
@@ -383,7 +405,7 @@ def add_alias(
         return
 
     alias = EntityAlias(
-        id=str(uuid.uuid4()),
+        id=uuid.uuid4(),
         entity_id=entity_id,
         raw_name=raw_name,
         source=source,
