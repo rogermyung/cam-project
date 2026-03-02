@@ -216,9 +216,7 @@ class TestFetchCompanyFilings:
         client = MagicMock(spec=httpx.Client)
         client.get.return_value = _make_response(apple_data)
 
-        filings = fetch_company_filings(
-            APPLE_CIK, ["10-K"], date(2020, 1, 1), client=client
-        )
+        filings = fetch_company_filings(APPLE_CIK, ["10-K"], date(2020, 1, 1), client=client)
 
         assert len(filings) == 4  # four 10-K entries in fixture (one 8-K excluded)
         assert all(f.filing_type == "10-K" for f in filings)
@@ -228,9 +226,7 @@ class TestFetchCompanyFilings:
         client = MagicMock(spec=httpx.Client)
         client.get.return_value = _make_response(apple_data)
 
-        filings = fetch_company_filings(
-            APPLE_CIK, ["8-K"], date(2020, 1, 1), client=client
-        )
+        filings = fetch_company_filings(APPLE_CIK, ["8-K"], date(2020, 1, 1), client=client)
 
         assert len(filings) == 1
         assert filings[0].filing_type == "8-K"
@@ -240,9 +236,7 @@ class TestFetchCompanyFilings:
         client = MagicMock(spec=httpx.Client)
         client.get.return_value = _make_response(apple_data)
 
-        filings = fetch_company_filings(
-            APPLE_CIK, ["10-K"], date(2023, 1, 1), client=client
-        )
+        filings = fetch_company_filings(APPLE_CIK, ["10-K"], date(2023, 1, 1), client=client)
 
         # Only 2024 and 2023 10-Ks qualify (2022 and 2021 are excluded)
         assert len(filings) == 2
@@ -253,9 +247,7 @@ class TestFetchCompanyFilings:
         client = MagicMock(spec=httpx.Client)
         client.get.return_value = _make_response(apple_data)
 
-        filings = fetch_company_filings(
-            APPLE_CIK, ["10-K"], date(2030, 1, 1), client=client
-        )
+        filings = fetch_company_filings(APPLE_CIK, ["10-K"], date(2030, 1, 1), client=client)
 
         assert filings == []
 
@@ -264,9 +256,7 @@ class TestFetchCompanyFilings:
         client = MagicMock(spec=httpx.Client)
         client.get.return_value = _make_response(apple_data)
 
-        filings = fetch_company_filings(
-            APPLE_CIK, ["10-K"], date(2024, 1, 1), client=client
-        )
+        filings = fetch_company_filings(APPLE_CIK, ["10-K"], date(2024, 1, 1), client=client)
 
         assert len(filings) == 1
         f = filings[0]
@@ -311,9 +301,7 @@ class TestFetchCompanyFilings:
 
         with patch("cam.ingestion.edgar.time") as mock_time:
             mock_time.sleep.return_value = None
-            filings = fetch_company_filings(
-                "0001018724", ["10-K"], date(2010, 1, 1), client=client
-            )
+            filings = fetch_company_filings("0001018724", ["10-K"], date(2010, 1, 1), client=client)
 
         assert client.get.call_count == 2
         # Recent: 3 10-Ks; old page: 2 10-Ks → 5 total
@@ -341,9 +329,7 @@ class TestFetchCompanyFilings:
 
         with patch("cam.ingestion.edgar.time") as mock_time:
             mock_time.sleep.return_value = None
-            filings = fetch_company_filings(
-                "0001018724", ["10-K"], date(2020, 1, 1), client=client
-            )
+            filings = fetch_company_filings("0001018724", ["10-K"], date(2020, 1, 1), client=client)
 
         # Only recent 10-Ks (since_date 2020 → 3 of them)
         assert len(filings) == 3
@@ -623,11 +609,11 @@ class TestRateLimiting:
         client = MagicMock(spec=httpx.Client)
         client.get.side_effect = [
             _make_response(tickers_data),  # get_cik_for_ticker
-            _make_response(apple_data),    # fetch_company_filings
-            _make_response(sample_text),   # download filing 1
-            _make_response(sample_text),   # download filing 2
-            _make_response(sample_text),   # download filing 3
-            _make_response(sample_text),   # download filing 4
+            _make_response(apple_data),  # fetch_company_filings
+            _make_response(sample_text),  # download filing 1
+            _make_response(sample_text),  # download filing 2
+            _make_response(sample_text),  # download filing 3
+            _make_response(sample_text),  # download filing 4
         ]
 
         with patch("cam.ingestion.edgar.time") as mock_time:
@@ -645,9 +631,7 @@ class TestRateLimiting:
         assert mock_time.sleep.call_count >= 2
         for call_args in mock_time.sleep.call_args_list:
             delay = call_args[0][0]
-            assert delay == REQUEST_DELAY, (
-                f"Expected sleep({REQUEST_DELAY}) but got sleep({delay})"
-            )
+            assert delay == REQUEST_DELAY, f"Expected sleep({REQUEST_DELAY}) but got sleep({delay})"
 
     def test_request_delay_constant_exists_and_is_positive(self):
         import cam.ingestion.edgar as edgar_mod
@@ -909,9 +893,9 @@ class TestIngestAll10k:
         client = MagicMock(spec=httpx.Client)
         client.get.side_effect = [
             _make_response(tickers_data),  # get_cik_for_ticker
-            _make_response(xbrl_data),     # fetch_xbrl_facts
-            _make_response(apple_data),    # fetch_company_filings
-            _make_response(sample_text),   # download filing (only 1 since 2024-01-01)
+            _make_response(xbrl_data),  # fetch_xbrl_facts
+            _make_response(apple_data),  # fetch_company_filings
+            _make_response(sample_text),  # download filing (only 1 since 2024-01-01)
         ]
 
         with patch("cam.ingestion.edgar.time") as mock_time:
@@ -1100,9 +1084,7 @@ class TestPerformance:
         import time as _time
 
         start = _time.monotonic()
-        filings = fetch_company_filings(
-            APPLE_CIK, ["10-K"], date(2020, 1, 1), client=client
-        )
+        filings = fetch_company_filings(APPLE_CIK, ["10-K"], date(2020, 1, 1), client=client)
         elapsed = _time.monotonic() - start
 
         assert len(filings) == n

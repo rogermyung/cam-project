@@ -408,9 +408,7 @@ def download_filing(
         resp = _get(url, client=client)
         text = _extract_text(resp.text)
     except httpx.HTTPError as exc:
-        logger.error(
-            "Failed to download filing %s: %s", filing_metadata.accession_number, exc
-        )
+        logger.error("Failed to download filing %s: %s", filing_metadata.accession_number, exc)
         raise
 
     # --- Store ---
@@ -522,13 +520,9 @@ def ingest_all_10k(
                 result.ingested += 1
 
             except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "Failed to ingest filing %s: %s", filing.accession_number, exc
-                )
+                logger.error("Failed to ingest filing %s: %s", filing.accession_number, exc)
                 result.errors += 1
-                result.error_details.append(
-                    f"Filing {filing.accession_number}: {exc}"
-                )
+                result.error_details.append(f"Filing {filing.accession_number}: {exc}")
 
     return result
 
