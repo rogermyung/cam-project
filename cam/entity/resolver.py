@@ -367,8 +367,11 @@ def _queue_for_review(
     """
     Persist a review-queue item to the Signal table and to the in-process list.
 
-    Commits immediately so the row is visible to other processes (e.g. the CLI
-    reading the queue from a separate DB connection).
+    Flushes (but does not commit) so that the new row participates in the
+    caller's transaction.  The caller is responsible for committing so that
+    other processes (e.g. the CLI reading the queue from a separate DB
+    connection) can see the rows.  bulk_resolve() issues a single commit after
+    the loop; single-record callers of resolve() should commit themselves.
     """
     signal = Signal(
         entity_id=best_match_entity_id,
@@ -379,7 +382,7 @@ def _queue_for_review(
         evidence=json.dumps({"raw_name": raw_name, "best_match_name": best_match_name}),
     )
     db.add(signal)
-    db.commit()
+    db.flush()
 
     item = ReviewQueueItem(
         raw_name=raw_name,
@@ -480,6 +483,10 @@ def bulk_resolve(
         # Slow path: full resolve (fuzzy + optional API)
         result = resolve(raw_name, source, db, hint=hint, **kwargs)
         results.append(result)
+
+    # Commit once for the whole batch so any review-queue Signal rows written
+    # by _queue_for_review() become visible to other processes (e.g. the CLI).
+    db.commit()
 
     return results
 
