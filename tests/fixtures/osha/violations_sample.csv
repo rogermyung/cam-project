@@ -1,0 +1,101 @@
+activity_nr,estab_name,site_city,site_state,naics_code,open_date,violation_type,initial_penalty,citation_text
+101001,ACME MANUFACTURING CO,CHICAGO,IL,332710,20220315,S,12500,Failure to guard moving parts on drill press
+101002,ACME MANUFACTURING CO,CHICAGO,IL,332710,20220315,W,45000,Willful failure to provide fall protection at elevated platform
+101003,ACME MANUFACTURING CO,CHICAGO,IL,332710,20220315,R,28000,Repeat violation of lockout/tagout procedures
+101004,ACME MANUFACTURING CO,CHICAGO,IL,332710,20220315,O,1500,Other-than-serious: missing safety data sheets
+101005,ACME MANUFACTURING CO,CHICAGO,IL,332710,20220315,S,7800,Inadequate machine guarding on conveyor belt
+101006,AMAZON.COM SERVICES LLC - BALTIMORE,BALTIMORE,MD,493110,20221105,S,15000,Ergonomic hazards at packing stations exceeding OSHA limits
+101007,AMAZON.COM SERVICES LLC - BALTIMORE,BALTIMORE,MD,493110,20221105,S,9500,Blocked emergency exit in warehouse area
+101008,AMAZON.COM SERVICES LLC - BALTIMORE,BALTIMORE,MD,493110,20221105,W,78000,Willful failure to record and report injury data
+101009,AMAZON.COM SERVICES LLC - SEATTLE,SEATTLE,WA,493110,20220820,S,12000,Forklift operation without required training
+101010,AMAZON.COM SERVICES LLC - SEATTLE,SEATTLE,WA,493110,20220820,O,2000,Missing fire extinguisher inspection tags
+101011,WALMART DISTRIBUTION CENTER #4521,CORSICANA,TX,493110,20211203,S,8500,Powered industrial truck safety violations
+101012,WALMART DISTRIBUTION CENTER #4521,CORSICANA,TX,493110,20211203,R,22000,Repeat: Failure to maintain pedestrian safety lanes
+101013,WALMART DISTRIBUTION CENTER #4521,CORSICANA,TX,493110,20211203,S,6200,Inadequate lighting in storage areas
+101014,TYSON FOODS INC,SPRINGDALE,AR,311615,20220630,W,98000,Willful: Failure to use required respiratory protection in processing area
+101015,TYSON FOODS INC,SPRINGDALE,AR,311615,20220630,S,18500,Inadequate machine guarding on poultry line equipment
+101016,TYSON FOODS INC,SPRINGDALE,AR,311615,20220630,S,11000,Failure to implement HACCP procedures properly
+101017,TYSON FOODS INC,SPRINGDALE,AR,311615,20220630,R,35000,Repeat lockout/tagout violation
+101018,EXXON MOBIL CORP - BAYTOWN REFINERY,BAYTOWN,TX,324110,20230102,S,25000,Failure to conduct process hazard analysis update
+101019,EXXON MOBIL CORP - BAYTOWN REFINERY,BAYTOWN,TX,324110,20230102,W,145000,Willful violation of PSM standard for highly hazardous chemicals
+101020,EXXON MOBIL CORP - BAYTOWN REFINERY,BAYTOWN,TX,324110,20230102,S,19000,Inadequate employee emergency action plan training
+101021,CONSTRUCTION CORP - DALLAS,DALLAS,TX,236220,20220815,S,9800,Fall protection violation on commercial construction site
+101022,CONSTRUCTION CORP - DALLAS,DALLAS,TX,236220,20220815,S,7500,Failure to use personal fall arrest system above 6 feet
+101023,CONSTRUCTION CORP - DALLAS,DALLAS,TX,236220,20220815,W,55000,Willful: trenching cave-in protection absent
+101024,CONSTRUCTION CORP - DALLAS,DALLAS,TX,236220,20220815,O,1200,Missing hard hat requirement compliance
+101025,ABC STEEL LLC,GARY,IN,331110,20221010,S,14500,Crane operator without required certification
+101026,ABC STEEL LLC,GARY,IN,331110,20221010,R,42000,Repeat: failure to inspect overhead cranes
+101027,ABC STEEL LLC,GARY,IN,331110,20221010,S,8900,Inadequate personal protective equipment for molten metal exposure
+101028,GENERAL DYNAMICS CORP,GROTON,CT,336611,20220504,S,11500,Confined space entry without atmospheric testing
+101029,GENERAL DYNAMICS CORP,GROTON,CT,336611,20220504,S,6700,Failure to develop written confined space entry program
+101030,GENERAL DYNAMICS CORP,GROTON,CT,336611,20220504,W,67000,Willful failure to provide respiratory protection program
+101031,PILGRIM'S PRIDE CORP,GREELEY,CO,311615,20221201,S,16000,Ergonomic hazards: repetitive motion injuries in poultry processing
+101032,PILGRIM'S PRIDE CORP,GREELEY,CO,311615,20221201,S,9200,Electrical safety violations in wet processing environment
+101033,PILGRIM'S PRIDE CORP,GREELEY,CO,311615,20221201,R,31000,Repeat ammonia refrigeration process safety violation
+101034,SMITHFIELD FOODS INC - TAR HEEL,TAR HEEL,NC,311612,20220720,W,112000,Willful: failure to guard dangerous moving parts on slaughter line
+101035,SMITHFIELD FOODS INC - TAR HEEL,TAR HEEL,NC,311612,20220720,S,22000,Inadequate emergency eyewash and shower equipment
+101036,SMITHFIELD FOODS INC - TAR HEEL,TAR HEEL,NC,311612,20220720,S,8800,Failure to conduct annual refresher training on bloodborne pathogens
+101037,HOME DEPOT USA INC,ATLANTA,GA,444110,20210915,,0,Inspection completed with no violations found
+101038,HOME DEPOT USA INC,ATLANTA,GA,444110,20210915,,0,Inspection completed with no violations found
+101039,TARGET CORP,MINNEAPOLIS,MN,452319,20220301,,0,Inspection completed: all safety requirements met
+101040,TARGET CORP,MINNEAPOLIS,MN,452319,20220301,O,500,Minor recordkeeping deficiency corrected on site
+101041,FORD MOTOR CO,DEARBORN,MI,336111,20220418,S,13000,Arc flash hazard analysis not current for electrical equipment
+101042,FORD MOTOR CO,DEARBORN,MI,336111,20220418,S,9600,Failure to de-energize electrical equipment before maintenance
+101043,FORD MOTOR CO,DEARBORN,MI,336111,20220418,W,89000,Willful: auto assembly robot safety distance violation
+101044,FORD MOTOR CO,DEARBORN,MI,336111,20220418,R,18500,Repeat: insufficient machine guarding on stamping press
+101045,UNITED STATES STEEL CORP,PITTSBURGH,PA,331110,20221108,S,17500,Failure to conduct required crane inspections
+101046,UNITED STATES STEEL CORP,PITTSBURGH,PA,331110,20221108,W,95000,Willful: exposure to excessive carbon monoxide levels in blast furnace area
+101047,UNITED STATES STEEL CORP,PITTSBURGH,PA,331110,20221108,S,11000,Inadequate fall protection on elevated work platforms
+101048,CHEVRON USA INC - RICHMOND,RICHMOND,CA,324110,20230215,S,28000,Process safety management deficiency in chemical reactors
+101049,CHEVRON USA INC - RICHMOND,RICHMOND,CA,324110,20230215,W,132000,Willful PSM violation: failure to update process hazard analysis
+101050,CHEVRON USA INC - RICHMOND,RICHMOND,CA,324110,20230215,S,14500,Employee training deficiency on emergency response procedures
+101051,AMAZON LOGISTICS INC,PHOENIX,AZ,492110,20221206,S,10500,Pedestrian/forklift interaction hazard in warehouse
+101052,AMAZON LOGISTICS INC,PHOENIX,AZ,492110,20221206,S,8200,Excessive lifting weight requirements without engineering controls
+101053,AMAZON LOGISTICS INC,PHOENIX,AZ,492110,20221206,O,1800,Failure to maintain first aid kit adequately stocked
+101054,HARBOR FREIGHT TOOLS,CAMARILLO,CA,444130,20210710,,0,Inspection with no violations
+101055,3M COMPANY,MAPLEWOOD,MN,339112,20220905,S,21000,Inadequate chemical hygiene plan for laboratory operations
+101056,3M COMPANY,MAPLEWOOD,MN,339112,20220905,S,7400,Failure to maintain SDS for all hazardous chemicals
+101057,3M COMPANY,MAPLEWOOD,MN,339112,20220905,W,76000,Willful: failure to implement hearing conservation program
+101058,COCA-COLA CONSOLIDATED INC,CHARLOTTE,NC,312120,20221025,S,5500,Forklift battery charging area lacks adequate ventilation
+101059,COCA-COLA CONSOLIDATED INC,CHARLOTTE,NC,312120,20221025,O,900,Exit sign not illuminated in secondary storage area
+101060,PEPSICO INC - FRITO LAY DIV,PLANO,TX,311919,20220628,S,8700,Machine guarding deficiency on packaging equipment
+101061,PEPSICO INC - FRITO LAY DIV,PLANO,TX,311919,20220628,R,19500,Repeat: lockout/tagout program deficiency
+101062,CATERPILLAR INC,PEORIA,IL,333120,20221114,S,12800,Inadequate guarding on manufacturing equipment
+101063,CATERPILLAR INC,PEORIA,IL,333120,20221114,S,6900,Electrical safety violation in maintenance shop
+101064,CATERPILLAR INC,PEORIA,IL,333120,20221114,W,82000,Willful: failure to implement confined space rescue procedures
+101065,,CHICAGO,IL,336111,20220101,S,5000,Establishment name missing from record
+101066,BOEING CO - EVERETT PLANT,EVERETT,WA,336411,20221215,S,31000,Fall protection violation on aircraft assembly scaffolding
+101067,BOEING CO - EVERETT PLANT,EVERETT,WA,336411,20221215,W,175000,Willful: failure to control hazardous energy on production equipment
+101068,BOEING CO - EVERETT PLANT,EVERETT,WA,336411,20221215,S,14000,Respiratory protection program deficiencies in paint shop
+101069,BOEING CO - EVERETT PLANT,EVERETT,WA,336411,20221215,R,38000,Repeat: scaffold safety violations
+101070,CARGILL MEAT SOLUTIONS,WICHITA,KS,311612,20220801,S,19000,Ammonia refrigerant leak detection system failure
+101071,CARGILL MEAT SOLUTIONS,WICHITA,KS,311612,20220801,W,108000,Willful: failure to follow OSHA PSM ammonia standard
+101072,CARGILL MEAT SOLUTIONS,WICHITA,KS,311612,20220801,S,9800,Inadequate personal protective equipment for ammonia exposure
+101073,DOW CHEMICAL CO,FREEPORT,TX,325110,20230110,S,27000,Process hazard analysis not reviewed within 5-year cycle
+101074,DOW CHEMICAL CO,FREEPORT,TX,325110,20230110,W,163000,Willful: failure to implement mechanical integrity program for pressure vessels
+101075,DOW CHEMICAL CO,FREEPORT,TX,325110,20230110,S,11500,Emergency response plan not coordinated with local agencies
+101076,NUCOR CORP - NORFOLK,NORFOLK,NE,331110,20221020,S,16500,Steel coil storage instability hazard
+101077,NUCOR CORP - NORFOLK,NORFOLK,NE,331110,20221020,S,9100,Crane operator certification records incomplete
+101078,NUCOR CORP - NORFOLK,NORFOLK,NE,331110,20221020,R,27500,Repeat: inadequate guarding on rolling mill equipment
+101079,DOLLAR GENERAL CORP,GOODLETTSVILLE,TN,452319,20210820,,0,Inspection with no violations noted
+101080,DOLLAR GENERAL CORP,GOODLETTSVILLE,TN,452319,20210820,O,750,Improper storage of flammable materials corrected during inspection
+101081,UPS SUPPLY CHAIN SOLUTIONS,LOUISVILLE,KY,492110,20221018,S,11200,Unguarded conveyor belt pinch points in sorting facility
+101082,UPS SUPPLY CHAIN SOLUTIONS,LOUISVILLE,KY,492110,20221018,S,7800,Battery charging safety deficiency
+101083,GENERAL ELECTRIC CO,SCHENECTADY,NY,335312,20220512,S,14000,Inadequate lockout/tagout on transformer manufacturing line
+101084,GENERAL ELECTRIC CO,SCHENECTADY,NY,335312,20220512,W,91000,Willful: failure to guard electrical hazards during energized work
+101085,WASTE MANAGEMENT INC,HOUSTON,TX,562111,20220920,S,8900,Lack of required backup alarms on waste collection vehicles
+101086,WASTE MANAGEMENT INC,HOUSTON,TX,562111,20220920,R,24000,Repeat: struck-by hazard in solid waste facility
+101087,WASTE MANAGEMENT INC,HOUSTON,TX,562111,20220920,S,6500,Inadequate PPE for hazardous waste handling
+101088,INTERNATIONAL PAPER CO,MEMPHIS,TN,322121,20221130,S,15000,Failure to control energy during paper machine maintenance
+101089,INTERNATIONAL PAPER CO,MEMPHIS,TN,322121,20221130,W,88000,Willful: worker exposed to unguarded machinery during cleaning
+101090,KRONOS WORLDWIDE INC,DALLAS,TX,325180,20230205,S,22000,Chemical process safety deficiency involving titanium dioxide
+101091,KRONOS WORLDWIDE INC,DALLAS,TX,325180,20230205,S,9700,Inadequate hazard communication for chlorine process
+101092,MCDONALD'S CORP - OAK BROOK,OAK BROOK,IL,722513,20220414,,0,No violations found during inspection
+101093,MCDONALD'S CORP - OAK BROOK,OAK BROOK,IL,722513,20220414,O,400,Minor slip hazard in kitchen corrected
+101094,JOHNS MANVILLE CORP,DENVER,CO,327993,20221005,S,13500,Fiber glass dust exposure controls inadequate
+101095,JOHNS MANVILLE CORP,DENVER,CO,327993,20221005,W,79000,Willful: failure to implement respiratory protection for silica exposure
+101096,WHOLE FOODS MARKET INC,AUSTIN,TX,445110,20210601,,0,Inspection completed with no citations issued
+101097,WHOLE FOODS MARKET INC,AUSTIN,TX,445110,20210601,O,650,Wet floor sign protocol not followed
+101098,INTEL CORP,HILLSBORO,OR,334413,20230120,S,18000,Inadequate emergency eyewash for HF acid exposure
+101099,INTEL CORP,HILLSBORO,OR,334413,20230120,S,11500,Chemical inventory incomplete for highly toxic materials
+101100,INTEL CORP,HILLSBORO,OR,334413,20230120,W,94000,Willful: failure to maintain complete written chemical hygiene plan
