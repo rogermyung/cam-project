@@ -227,11 +227,13 @@ def ingest_from_csv(
     result.total = len(rows)
 
     # --- Filter by since_date ---
+    # Rows with an unparseable open_date are excluded when since_date is set;
+    # keeping them would silently ingest out-of-window records.
     if since_date is not None:
         filtered = []
         for row in rows:
             d = _parse_date(row.get("open_date", ""))
-            if d is None or d >= since_date:
+            if d is not None and d >= since_date:
                 filtered.append(row)
         rows = filtered
 
@@ -250,8 +252,10 @@ def ingest_from_csv(
         return result
 
     # --- Bulk entity resolution ---
+    # commit=False: ingest_from_csv owns the transaction; we commit once below
+    # after all events are inserted so that the entire batch is atomic.
     resolve_records = [{"name": _clean_estab_name(r.get("estab_name", ""))} for r in to_process]
-    resolved = bulk_resolve(resolve_records, "osha", db)
+    resolved = bulk_resolve(resolve_records, "osha", db, commit=False)
 
     # --- Insert events ---
     for row, res in zip(to_process, resolved):
@@ -302,5 +306,8 @@ def fetch_recent_inspections(
     data = resp.json()
     if isinstance(data, list):
         return data
-    # Some DOL API responses wrap the list in a key
-    return data.get("data", data.get("inspections", []))
+    if isinstance(data, dict):
+        # Some DOL API responses wrap the list under a key
+        return data.get("data", data.get("inspections", []))
+    logger.warning("Unexpected DOL API response type %s; returning empty list", type(data).__name__)
+    return []

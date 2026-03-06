@@ -320,6 +320,17 @@ class TestIngestFromCsv:
         result = ingest_from_csv(SAMPLE_CSV, since_date=date(2030, 1, 1), db=db)
         assert result.ingested == 0
 
+    def test_since_date_excludes_rows_with_unparseable_dates(self, db, tmp_path):
+        """Rows with bad open_date must NOT slip through the since_date filter."""
+        csv_file = tmp_path / "bad_date.csv"
+        csv_file.write_text(
+            "activity_nr,estab_name,site_city,site_state,naics_code,"
+            "open_date,violation_type,initial_penalty,citation_text\n"
+            "999001,ACME CO,CHICAGO,IL,332710,INVALID_DATE,S,5000,test\n"
+        )
+        result = ingest_from_csv(csv_file, since_date=date(2020, 1, 1), db=db)
+        assert result.ingested == 0  # unparseable date excluded, not admitted
+
     def test_violation_event_type(self, db):
         ingest_from_csv(SAMPLE_CSV, db=db)
         violations = (
@@ -545,6 +556,25 @@ class TestFetchRecentInspections:
 
         with pytest.raises(httpx.HTTPStatusError):
             fetch_recent_inspections(30, client=client)
+
+    def test_unexpected_json_type_returns_empty_list(self):
+        """Non-list, non-dict JSON (e.g. null) must not raise AttributeError."""
+        client = MagicMock(spec=httpx.Client)
+        mock_resp = _make_response([])  # valid response shell
+        mock_resp.json.return_value = None  # override to return null JSON
+        client.get.return_value = mock_resp
+
+        results = fetch_recent_inspections(30, client=client)
+        assert results == []
+
+    def test_string_json_response_returns_empty_list(self):
+        client = MagicMock(spec=httpx.Client)
+        mock_resp = _make_response([])
+        mock_resp.json.return_value = "unexpected string"
+        client.get.return_value = mock_resp
+
+        results = fetch_recent_inspections(30, client=client)
+        assert results == []
 
 
 # ---------------------------------------------------------------------------

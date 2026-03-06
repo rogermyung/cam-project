@@ -411,6 +411,7 @@ def bulk_resolve(
     db: Session,
     name_field: str = "name",
     hint_field: str | None = None,
+    commit: bool = True,
     **kwargs,
 ) -> list[ResolveResult]:
     """
@@ -424,6 +425,10 @@ def bulk_resolve(
     db:         SQLAlchemy session.
     name_field: Key in each dict containing the raw company name.
     hint_field: Optional key containing a hint dict.
+    commit:     If True (default), commit the session after the batch so that
+                review-queue Signal rows are visible to other processes.  Pass
+                False when the caller owns the transaction boundary (e.g.
+                ingest_from_csv commits once after inserting events).
     **kwargs:   Passed through to resolve().
     """
     # Pre-load the full alias table once.
@@ -486,7 +491,9 @@ def bulk_resolve(
 
     # Commit once for the whole batch so any review-queue Signal rows written
     # by _queue_for_review() become visible to other processes (e.g. the CLI).
-    db.commit()
+    # Skipped when the caller sets commit=False to own the transaction boundary.
+    if commit:
+        db.commit()
 
     return results
 
