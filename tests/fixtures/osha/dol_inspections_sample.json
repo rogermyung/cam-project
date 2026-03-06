@@ -1,0 +1,57 @@
+[
+  {
+    "activity_nr": "201001",
+    "estab_name": "ACME MANUFACTURING CO",
+    "site_city": "CHICAGO",
+    "site_state": "IL",
+    "naics_code": "332710",
+    "open_date": "2023-10-01",
+    "violation_type": "S",
+    "initial_penalty": "14500",
+    "citation_text": "Failure to guard rotating shafts on production equipment"
+  },
+  {
+    "activity_nr": "201002",
+    "estab_name": "AMAZON.COM SERVICES LLC",
+    "site_city": "KENT",
+    "site_state": "WA",
+    "naics_code": "493110",
+    "open_date": "2023-10-05",
+    "violation_type": "S",
+    "initial_penalty": "12000",
+    "citation_text": "Conveyor system lacked required safety guards at transfer points"
+  },
+  {
+    "activity_nr": "201003",
+    "estab_name": "TYSON FOODS INC",
+    "site_city": "AMARILLO",
+    "site_state": "TX",
+    "naics_code": "311615",
+    "open_date": "2023-10-08",
+    "violation_type": "W",
+    "initial_penalty": "87000",
+    "citation_text": "Willful failure to implement required ammonia refrigeration PSM program"
+  },
+  {
+    "activity_nr": "201004",
+    "estab_name": "HOME DEPOT USA INC",
+    "site_city": "MARIETTA",
+    "site_state": "GA",
+    "naics_code": "444110",
+    "open_date": "2023-10-10",
+    "violation_type": "",
+    "initial_penalty": "0",
+    "citation_text": ""
+  },
+  {
+    "activity_nr": "201005",
+    "estab_name": "FORD MOTOR CO",
+    "site_city": "DEARBORN",
+    "site_state": "MI",
+    "naics_code": "336111",
+    "open_date": "2023-10-12",
+    "violation_type": "R",
+    "initial_penalty": "33000",
+    "citation_text": "Repeat violation: inadequate machine guarding on robotic welding cell"
+  }
+]
