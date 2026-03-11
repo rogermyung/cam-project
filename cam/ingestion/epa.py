@@ -57,6 +57,9 @@ _TRI_CITY_COL = "CITY"
 _TRI_PARENT_CO_COL = "PARENT_CO_NAME"
 _TRI_UNIT_COL = "UNIT_OF_MEASURE"
 
+# Unit conversion: TRI reports in Pounds or Grams; normalise everything to Pounds.
+_GRAMS_TO_LBS = Decimal("0.00220462")
+
 # ECHO response key paths
 _ECHO_CASE_LIST_KEY = "CaseList"
 
@@ -151,6 +154,15 @@ def _parse_date(value: str | None) -> date | None:
     return None
 
 
+def _normalize_to_lbs(value: Decimal | None, unit: str) -> Decimal | None:
+    """Convert TRI release quantity to pounds for consistent comparison."""
+    if value is None:
+        return None
+    if "gram" in unit.lower():
+        return value * _GRAMS_TO_LBS
+    return value  # already in pounds (or unknown unit — treat as pounds)
+
+
 def _clean_facility_name(raw: str | None) -> str:
     """Strip trailing ' - LOCATION' suffixes from EPA facility names."""
     import re
@@ -228,9 +240,12 @@ def ingest_tri(
 
     to_process = []
     for row in rows:
+        yr = (row.get(_TRI_YEAR_COL) or "").strip()
+        if yr != str(year):
+            result.skipped += 1
+            continue
         frs = (row.get(_TRI_FRS_ID_COL) or "").strip()
         chem = (row.get(_TRI_CHEMICAL_COL) or "").strip()
-        yr = (row.get(_TRI_YEAR_COL) or "").strip()
         tri_key = f"{frs}|{chem}|{yr}"
         if tri_key and tri_key in existing_keys:
             result.skipped += 1
@@ -252,11 +267,15 @@ def ingest_tri(
         tri_key = row.get("_tri_key", "")
         try:
             total_releases = _parse_decimal(row.get(_TRI_TOTAL_RELEASES_COL))
+            unit = (row.get(_TRI_UNIT_COL) or "Pounds").strip()
+            total_releases_lbs = _normalize_to_lbs(total_releases, unit)
             event_year = int((row.get(_TRI_YEAR_COL) or "0").strip())
             event_date = date(event_year, 12, 31) if event_year > 0 else None
 
             raw = {k: v for k, v in row.items() if not k.startswith("_")}
             raw["tri_key"] = tri_key
+            if total_releases_lbs is not None:
+                raw["total_releases_lbs"] = str(total_releases_lbs)
 
             event = Event(
                 entity_id=res.entity_id,
@@ -265,8 +284,7 @@ def ingest_tri(
                 event_date=event_date,
                 penalty_usd=None,  # TRI has no penalty; releases are self-reported
                 description=(
-                    f"{row.get(_TRI_CHEMICAL_COL, '').strip()} release: "
-                    f"{total_releases} {row.get(_TRI_UNIT_COL, 'Pounds').strip()}"
+                    f"{row.get(_TRI_CHEMICAL_COL, '').strip()} release: {total_releases} {unit}"
                     if total_releases is not None
                     else row.get(_TRI_CHEMICAL_COL, "").strip()
                 ),
@@ -340,7 +358,13 @@ def ingest_echo_violations(
     # Idempotency by activity_id
     existing_ids = _get_existing_keys(db, "epa_echo", "activity_id")
 
-    to_process = [c for c in cases if (c.get("activity_id") or "") not in existing_ids]
+    to_process = [
+        c
+        for c in cases
+        if (c.get("activity_id") or "") not in existing_ids
+        and (d := _parse_date(c.get("action_date"))) is not None
+        and d >= since_date
+    ]
     result.skipped = result.total - len(to_process)
 
     if not to_process:
@@ -415,11 +439,13 @@ def compute_tri_enforcement_divergence(
     if not tri_events:
         return None
 
-    # Sum up total releases across all chemicals (in reported units)
+    # Sum up total releases across all chemicals, normalised to pounds.
+    # Prefer the pre-normalised total_releases_lbs stored at ingest time;
+    # fall back to TOTAL_RELEASES for events seeded without normalisation.
     tri_total: float = 0.0
     for ev in tri_events:
         raw = ev.raw_json or {}
-        val = _parse_decimal(raw.get(_TRI_TOTAL_RELEASES_COL))
+        val = _parse_decimal(raw.get("total_releases_lbs") or raw.get(_TRI_TOTAL_RELEASES_COL))
         if val is not None:
             tri_total += float(val)
 

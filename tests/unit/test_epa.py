@@ -232,17 +232,26 @@ class TestGetExistingKeys:
 
 class TestIngestTri:
     def test_ingests_all_rows(self, db):
+        # CSV has 21 rows total: 16 for year 2022, 5 for year 2021
         result = ingest_tri(2022, db=db, csv_path=TRI_CSV)
         assert result.total == 21
-        assert result.ingested == 21
+        assert result.ingested == 16
+        assert result.skipped == 5
         assert result.errors == 0
+
+    def test_year_filter_excludes_other_years(self, db):
+        """Only rows whose YEAR matches the requested year are ingested."""
+        result_2022 = ingest_tri(2022, db=db, csv_path=TRI_CSV)
+        result_2021 = ingest_tri(2021, db=db, csv_path=TRI_CSV)
+        assert result_2022.ingested == 16
+        assert result_2021.ingested == 5
 
     def test_events_created_in_db(self, db):
         ingest_tri(2022, db=db, csv_path=TRI_CSV)
         from sqlalchemy import select
 
         events = db.execute(select(Event).where(Event.source == "epa_tri")).scalars().all()
-        assert len(events) == 21
+        assert len(events) == 16
 
     def test_event_type_is_tri_release(self, db):
         ingest_tri(2022, db=db, csv_path=TRI_CSV)
@@ -254,9 +263,9 @@ class TestIngestTri:
     def test_idempotent_second_run(self, db):
         r1 = ingest_tri(2022, db=db, csv_path=TRI_CSV)
         r2 = ingest_tri(2022, db=db, csv_path=TRI_CSV)
-        assert r1.ingested == 21
+        assert r1.ingested == 16
         assert r2.ingested == 0
-        assert r2.skipped == 21
+        assert r2.skipped == 21  # 16 already in DB + 5 wrong year
 
     def test_event_date_is_dec_31_of_year(self, db):
         ingest_tri(2022, db=db, csv_path=TRI_CSV)
@@ -315,8 +324,25 @@ class TestIngestTri:
         with patch("cam.ingestion.epa.tempfile.gettempdir", return_value=str(tmp_path)):
             result = ingest_tri(2022, db=db, client=client)
 
-        assert result.ingested == 21
+        assert result.ingested == 16  # 16 of 21 rows are for year 2022
         assert "2022" in client.get.call_args[0][0]
+
+    def test_grams_normalized_to_pounds(self, db):
+        """Rows with UNIT_OF_MEASURE=Grams must have total_releases_lbs stored in raw_json."""
+        ingest_tri(2022, db=db, csv_path=TRI_CSV)
+        from decimal import Decimal
+
+        from sqlalchemy import select
+
+        events = db.execute(select(Event).where(Event.source == "epa_tri")).scalars().all()
+        # International Paper dioxin row uses Grams; 0.082 grams * 0.00220462 ≈ 0.000181 lbs
+        grams_events = [e for e in events if (e.raw_json or {}).get("UNIT_OF_MEASURE") == "Grams"]
+        assert grams_events, "Expected at least one Grams row"
+        for ev in grams_events:
+            raw_releases = Decimal((ev.raw_json or {}).get("TOTAL_RELEASES", "0"))
+            lbs_stored = Decimal((ev.raw_json or {}).get("total_releases_lbs", "0"))
+            expected_lbs = raw_releases * Decimal("0.00220462")
+            assert abs(lbs_stored - expected_lbs) < Decimal("1e-10")
 
     def test_entity_resolution_uses_parent_company(self, db):
         """Parent company name is preferred over facility name for resolution."""
@@ -419,14 +445,28 @@ class TestIngestEchoViolations:
         assert result.ingested == 0
         assert result.total == 0
 
+    def test_since_date_filters_old_cases(self, db):
+        """Cases with action_date before since_date must be excluded."""
+        cases = _load_echo_fixture()
+        # ECHO-CAA-003 has action_date 2021-07-19 → excluded when since_date=2022-01-01
+        result = ingest_echo_violations(date(2022, 1, 1), db=db, cases=cases)
+        assert result.ingested == 7
+        assert result.skipped == 1
+        from sqlalchemy import select
+
+        events = db.execute(select(Event).where(Event.source == "epa_echo")).scalars().all()
+        activity_ids = {e.raw_json["activity_id"] for e in events}
+        assert "ECHO-CAA-003" not in activity_ids
+
     def test_fetches_from_api_when_cases_not_provided(self, db):
         cases = _load_echo_fixture()
         wrapped = {"Results": {"CaseList": cases}}
         client = MagicMock(spec=httpx.Client)
         client.get.return_value = _make_response(wrapped)
 
+        # since_date=2022-01-01 excludes ECHO-CAA-003 (action_date 2021-07-19)
         result = ingest_echo_violations(date(2022, 1, 1), db=db, client=client)
-        assert result.ingested == 8
+        assert result.ingested == 7
 
     def test_api_list_response_handled(self, db):
         """ECHO API may return a bare list instead of wrapped dict."""
@@ -434,8 +474,9 @@ class TestIngestEchoViolations:
         client = MagicMock(spec=httpx.Client)
         client.get.return_value = _make_response(cases)
 
+        # since_date=2022-01-01 excludes ECHO-CAA-003 (action_date 2021-07-19)
         result = ingest_echo_violations(date(2022, 1, 1), db=db, client=client)
-        assert result.ingested == 8
+        assert result.ingested == 7
 
     def test_unexpected_api_response_returns_zero(self, db):
         client = MagicMock(spec=httpx.Client)
@@ -584,11 +625,11 @@ class TestComputeDivergence:
 
 class TestPerformance:
     def test_ingest_tri_fixture_within_time_limit(self, db):
-        """20-row TRI fixture must ingest in < 5 seconds."""
+        """TRI fixture must ingest in < 5 seconds."""
         start = time.monotonic()
         result = ingest_tri(2022, db=db, csv_path=TRI_CSV)
         elapsed = time.monotonic() - start
-        assert result.ingested == 21
+        assert result.ingested == 16  # 16 of 21 rows are for year 2022
         assert elapsed < 5.0, f"ingest_tri took {elapsed:.2f}s (limit: 5s)"
 
     def test_ingest_echo_fixture_within_time_limit(self, db):
