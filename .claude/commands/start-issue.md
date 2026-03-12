@@ -24,6 +24,8 @@ Given the module number in the arguments (e.g. `3` for M3), do the following:
 
 4. **Comment on the GitHub issue** — the issue number matches the module number + 1 (M3 = issue #4, M0 = issue #1, etc.). Run:
    ```bash
+   gh issue edit <issue-number>  --add-assignee @me
+   gh issue edit <issue-number> --add-label "in-progress"
    gh issue comment <issue-number> --body "Starting implementation of M<N> — <Title>. Branch: \`module/m<N>-<short-name>\`. Will implement <key functions> per PLAN.md spec."
    ```
 
