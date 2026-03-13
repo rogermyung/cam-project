@@ -23,7 +23,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from tenacity import (
     retry,
@@ -217,12 +217,19 @@ def _fetch_complaints_page(
 
 
 def _hits_to_complaints(hits: list[dict]) -> list[dict]:
-    """Flatten CFPB API hits into normalised complaint dicts."""
+    """Flatten CFPB API hits into normalised complaint dicts.
+
+    Hits with a missing or blank ``_id`` are silently dropped; they cannot be
+    tracked for idempotency and would be re-ingested on every run.
+    """
     complaints = []
     for hit in hits:
         if not isinstance(hit, dict):
             continue
         complaint_id = str(hit.get("_id") or "").strip()
+        if not complaint_id:
+            logger.warning("Dropping CFPB hit with missing _id: %r", hit)
+            continue
         source = hit.get("_source") or {}
         complaint = {
             "complaint_id": complaint_id,
@@ -276,11 +283,12 @@ def ingest_complaints(
     # Idempotency by complaint_id
     existing_ids = _get_existing_complaint_ids(db)
 
-    # Filter: not already in DB AND date_received >= since_date
+    # Filter: must have a complaint_id, not already in DB, and date_received >= since_date
     to_process = [
         c
         for c in complaints
-        if (c.get("complaint_id") or "") not in existing_ids
+        if (c.get("complaint_id") or "")  # skip blank IDs — cannot be tracked
+        and (c.get("complaint_id") or "") not in existing_ids
         and (d := _parse_date(c.get("date_received"))) is not None
         and d >= since_date
     ]
@@ -339,15 +347,15 @@ def compute_complaint_rate(
     period_end = date.today()
     period_start = period_end - timedelta(days=period_months * 30)
 
-    # Count complaints in the window
-    stmt = select(Event).where(
+    # Count complaints in the window using SQL COUNT — avoids loading full rows
+    stmt = select(func.count(Event.id)).where(
         Event.entity_id == entity_id,
         Event.source == "cfpb_complaint",
         Event.event_type == "complaint",
         Event.event_date >= period_start,
         Event.event_date <= period_end,
     )
-    complaint_count = len(db.execute(stmt).scalars().all())
+    complaint_count: int = db.execute(stmt).scalar_one()
 
     # Get most recent total assets from EDGAR xbrl_facts
     edgar_stmt = select(Event).where(
@@ -363,8 +371,9 @@ def compute_complaint_rate(
         facts = (ev.raw_json or {}).get("xbrl_facts") or {}
         assets_entry = facts.get("Assets") or {}
         assets_val = _parse_decimal(assets_entry.get("value"))
-        assets_period = assets_entry.get("period_end", "")
-        if assets_val is not None and assets_period > best_period_end:
+        # Guard None; accept this entry if no asset found yet, or if it's more recent.
+        assets_period = assets_entry.get("period_end") or ""
+        if assets_val is not None and (not best_period_end or assets_period > best_period_end):
             total_assets = assets_val
             best_period_end = assets_period
 
@@ -410,14 +419,14 @@ def detect_complaint_spike(
     prior_start = today - timedelta(days=lookback_months * 30)
 
     def _count(start: date, end: date) -> int:
-        stmt = select(Event).where(
+        stmt = select(func.count(Event.id)).where(
             Event.entity_id == entity_id,
             Event.source == "cfpb_complaint",
             Event.event_type == "complaint",
             Event.event_date >= start,
             Event.event_date < end,
         )
-        return len(db.execute(stmt).scalars().all())
+        return db.execute(stmt).scalar_one()
 
     recent_count = _count(recent_start, today)
     prior_count = _count(prior_start, recent_start)

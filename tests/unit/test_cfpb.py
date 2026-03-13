@@ -224,6 +224,18 @@ class TestRetryLogic:
 
 
 class TestHitsToComplaints:
+    def test_drops_hits_with_blank_id(self):
+        """Hits without _id must be silently dropped to prevent duplicate ingestion."""
+        hits = [
+            {"_id": "", "_source": {"company": "No ID Bank"}},
+            {"_source": {"company": "Also No ID"}},  # missing _id entirely
+            {"_id": "VALID-1", "_source": {"company": "Good Bank"}},
+        ]
+        result = _hits_to_complaints(hits)
+        assert len(result) == 1
+        assert result[0]["complaint_id"] == "VALID-1"
+
+    # (existing tests continue below)
     def test_extracts_complaint_id(self):
         hits = [{"_id": "ABC-123", "_source": {"company": "Test Bank"}}]
         result = _hits_to_complaints(hits)
@@ -423,6 +435,19 @@ class TestIngestComplaints:
         result = ingest_complaints(date(2022, 1, 1), db=db, client=client)
         assert result.ingested == 10  # 10 from 2022, 1 filtered by since_date
 
+    def test_blank_complaint_id_not_ingested(self, db):
+        """Complaints with missing/blank complaint_id must be skipped, not duplicated."""
+        blank_id_complaint = {
+            "complaint_id": "",
+            "company": "GHOST BANK",
+            "date_received": "2022-06-01",
+            "product": "Checking or savings account",
+            "issue": "Fee problem",
+        }
+        result = ingest_complaints(date(2022, 1, 1), db=db, complaints=[blank_id_complaint])
+        assert result.ingested == 0
+        assert result.skipped == 1
+
     def test_entity_resolution_strips_legal_suffix(self, db):
         entity = _make_entity(db, "WELLS FARGO BANK")
         from cam.entity.resolver import add_alias
@@ -453,6 +478,24 @@ class TestIngestComplaints:
 
 
 class TestComputeComplaintRate:
+    def test_none_period_end_in_edgar_does_not_crash(self, db):
+        """EDGAR xbrl_facts with period_end=None must not raise TypeError."""
+        entity = _make_entity(db, "Period End None Corp")
+        today = date.today()
+        ev = Event(
+            entity_id=entity.id,
+            source="sec_edgar",
+            event_type="filing",
+            event_date=today,
+            raw_json={"xbrl_facts": {"Assets": {"value": 10_000_000_000, "period_end": None}}},
+        )
+        db.add(ev)
+        db.commit()
+        _seed_complaint_event(db, entity.id, today - timedelta(days=10))
+        # Must not raise; period_end=None treated as "" so asset is still picked up
+        rate = compute_complaint_rate(entity.id, db=db)
+        assert rate is not None
+
     def test_returns_none_without_edgar_data(self, db):
         entity = _make_entity(db, "Rate Corp A")
         today = date.today()
