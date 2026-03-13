@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     nlp_model_dir: str = Field(default="./models")
     nlp_device: str = Field(default="cpu")
 
+    # Aggregation weights (M6)
+    weight_osha_rate: float = Field(default=0.25)
+    weight_epa_rate: float = Field(default=0.20)
+    weight_cfpb_spike: float = Field(default=0.20)
+    weight_agency_overlap: float = Field(default=0.35)
+
     # Alert thresholds
     alert_threshold_watch: float = Field(default=0.40)
     alert_threshold_elevated: float = Field(default=0.65)
