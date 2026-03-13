@@ -87,13 +87,13 @@ Three project-specific skills live in `.claude/commands/`:
 
 - `/start-issue <N>` — Read M\<N\> spec from PLAN.md, check deps, create branch, comment on issue
 - `/create-pr` — Run ruff, run tests, commit staged changes, push, open PR
-- `/qodo-review` — Fetch and display action-required comments from qodo-merge-pro[bot] on the current PR
+- `/qodo-review` — Fetch and display all review comments from qodo-merge-pro[bot] on the current PR (inline + issue-level; includes action-required bugs and general feedback)
 
 ## Ingestion Gotchas
 
 Patterns confirmed across M2–M4 that must be followed in all ingestion modules:
 
-- **Transaction ownership**: call `bulk_resolve(..., commit=False)`; the ingestion function issues the single `db.commit()` at the end. Committing inside `bulk_resolve` causes 500× slowdown on bulk runs.
+- **Transaction ownership**: call `bulk_resolve(..., commit=False)`; the ingestion function issues the single `db.commit()` at the end. This keeps the whole ingest atomic and lets the caller control visibility — `bulk_resolve(commit=True)` does a single post-batch commit which is fine for interactive use but wrong for bulk ingestion where the caller must own the boundary.
 - **Facility name cleaning**: strip `" - LOCATION"` suffix (`r"\s+-\s+[A-Z0-9 ]+$"`) before passing names to `bulk_resolve`. Both OSHA and EPA facilities use this pattern.
 - **Date guard**: `_parse_date()` returns `None` for unparseable values. Since-date filters must use `d is not None and d >= since_date` — never `d is None or d >= since_date` (the latter silently admits unparseable rows).
 
