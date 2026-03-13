@@ -13,15 +13,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from cam.analysis.aggregation import (
-    DEFAULT_WEIGHT_AGENCY_OVERLAP,
-    DEFAULT_WEIGHT_CFPB_SPIKE,
-    DEFAULT_WEIGHT_EPA_RATE,
-    DEFAULT_WEIGHT_OSHA_RATE,
     AgencySignalSummary,
     agency_overlap_bonus,
     compute_agency_summary,
     compute_industry_benchmarks,
 )
+from cam.config import Settings
 from cam.db.models import Base, Entity, Event
 
 # ---------------------------------------------------------------------------
@@ -99,11 +96,12 @@ def test_overlap_bonus_four_and_above():
 
 
 def test_weights_sum_to_one():
+    fields = Settings.model_fields
     total = (
-        DEFAULT_WEIGHT_OSHA_RATE
-        + DEFAULT_WEIGHT_EPA_RATE
-        + DEFAULT_WEIGHT_CFPB_SPIKE
-        + DEFAULT_WEIGHT_AGENCY_OVERLAP
+        fields["weight_osha_rate"].default
+        + fields["weight_epa_rate"].default
+        + fields["weight_cfpb_spike"].default
+        + fields["weight_agency_overlap"].default
     )
     assert abs(total - 1.0) < 1e-9
 
@@ -162,10 +160,10 @@ def test_benchmarks_excludes_out_of_window_events(db):
 def test_benchmarks_source_parameter(db):
     e1 = _entity(db, "Corp", naics_code="3311")
     _event(db, e1.id, "osha", "violation", date(2024, 1, 1))
-    _event(db, e1.id, "epa", "violation", date(2024, 1, 2))
+    _event(db, e1.id, "epa_echo", "violation", date(2024, 1, 2))
 
     osha_result = compute_industry_benchmarks("3311", TODAY, db=db, source="osha")
-    epa_result = compute_industry_benchmarks("3311", TODAY, db=db, source="epa")
+    epa_result = compute_industry_benchmarks("3311", TODAY, db=db, source="epa_echo")
     assert osha_result["avg_violation_count"] == 1.0
     assert epa_result["avg_violation_count"] == 1.0
 
@@ -236,7 +234,7 @@ def test_summary_excludes_events_outside_window(db):
 
 def test_summary_epa_only(db):
     entity = _entity(db, "Polluter Corp", naics_code="3311")
-    _event(db, entity.id, "epa", "violation", date(2024, 3, 1), penalty_usd=50000)
+    _event(db, entity.id, "epa_echo", "violation", date(2024, 3, 1), penalty_usd=50000)
 
     summary = compute_agency_summary(entity.id, TODAY, db=db)
     assert summary.epa_violation_count == 1
@@ -282,7 +280,7 @@ def test_summary_multi_agency_scores_higher_than_single(db):
 
     multi = _entity(db, "Multi Corp", naics_code="3311")
     _event(db, multi.id, "osha", "violation", date(2024, 1, 1), penalty_usd=1000)
-    _event(db, multi.id, "epa", "violation", date(2024, 2, 1), penalty_usd=5000)
+    _event(db, multi.id, "epa_echo", "violation", date(2024, 2, 1), penalty_usd=5000)
 
     single = _entity(db, "Single Corp", naics_code="3311")
     _event(db, single.id, "osha", "violation", date(2024, 1, 1), penalty_usd=1000)
@@ -298,7 +296,7 @@ def test_summary_multi_agency_scores_higher_than_single(db):
 def test_summary_three_agencies_max_overlap_bonus(db):
     entity = _entity(db, "Triple Threat Corp", naics_code="3311")
     _event(db, entity.id, "osha", "violation", date(2024, 1, 1), penalty_usd=1000)
-    _event(db, entity.id, "epa", "violation", date(2024, 1, 2), penalty_usd=1000)
+    _event(db, entity.id, "epa_echo", "violation", date(2024, 1, 2), penalty_usd=1000)
     # CFPB complaint
     _event(db, entity.id, "cfpb_complaint", "complaint", date(2024, 1, 3))
 
@@ -319,13 +317,13 @@ def test_composite_score_clamped_between_zero_and_one(db):
 
 def test_composite_score_max_inputs():
     """Verify formula with all sub-scores at maximum."""
+    fields = Settings.model_fields
+    w_osha = fields["weight_osha_rate"].default
+    w_epa = fields["weight_epa_rate"].default
+    w_cfpb = fields["weight_cfpb_spike"].default
+    w_overlap = fields["weight_agency_overlap"].default
     # osha_sub=1.0, epa_sub=1.0, cfpb_sub=1.0, overlap=0.7 (3 agencies)
-    expected = (
-        DEFAULT_WEIGHT_OSHA_RATE * 1.0
-        + DEFAULT_WEIGHT_EPA_RATE * 1.0
-        + DEFAULT_WEIGHT_CFPB_SPIKE * 1.0
-        + DEFAULT_WEIGHT_AGENCY_OVERLAP * 0.7
-    )
+    expected = w_osha * 1.0 + w_epa * 1.0 + w_cfpb * 1.0 + w_overlap * 0.7
     assert abs(expected - (0.25 + 0.20 + 0.20 + 0.35 * 0.7)) < 1e-9
     assert expected <= 1.0
 
@@ -334,11 +332,31 @@ def test_composite_score_reproducible(db):
     """Same inputs always yield the same score."""
     entity = _entity(db, "Corp", naics_code="3311")
     _event(db, entity.id, "osha", "violation", date(2024, 1, 1), penalty_usd=5000)
-    _event(db, entity.id, "epa", "violation", date(2024, 2, 1), penalty_usd=2000)
+    _event(db, entity.id, "epa_echo", "violation", date(2024, 2, 1), penalty_usd=2000)
 
     s1 = compute_agency_summary(entity.id, TODAY, db=db)
     s2 = compute_agency_summary(entity.id, TODAY, db=db)
     assert s1.composite_risk_score == s2.composite_risk_score
+
+
+def test_cfpb_spike_respects_period_end(db):
+    """CFPB spike detection must use period_end, not date.today(), for reproducibility."""
+    entity = _entity(db, "Corp")
+    historical_end = date(2024, 6, 1)
+
+    # Seed complaints in the recent half of the lookback window (last 3 of 6 months)
+    # prior half is empty → guaranteed spike
+    recent_date = historical_end - timedelta(days=15)  # inside recent half
+    for _ in range(5):
+        _event(db, entity.id, "cfpb_complaint", "complaint", recent_date)
+
+    summary = compute_agency_summary(entity.id, historical_end, lookback_days=365, db=db)
+    # Spike should be detected relative to historical_end, regardless of today's actual date
+    assert summary.cfpb_spike_detected is True
+
+    # Calling again must produce identical result (reproducible)
+    summary2 = compute_agency_summary(entity.id, historical_end, lookback_days=365, db=db)
+    assert summary2.cfpb_spike_detected == summary.cfpb_spike_detected
 
 
 # ---------------------------------------------------------------------------
@@ -358,8 +376,8 @@ def test_integration_full_summary(db):
         _event(db, peer.id, "osha", "violation", date(2024, i + 1, 15), penalty_usd=1000)
 
     # EPA: entity has 2 violations
-    _event(db, entity.id, "epa", "violation", date(2024, 3, 1), penalty_usd=10000)
-    _event(db, entity.id, "epa", "violation", date(2024, 4, 1), penalty_usd=15000)
+    _event(db, entity.id, "epa_echo", "violation", date(2024, 3, 1), penalty_usd=10000)
+    _event(db, entity.id, "epa_echo", "violation", date(2024, 4, 1), penalty_usd=15000)
 
     summary = compute_agency_summary(entity.id, TODAY, db=db)
 

@@ -15,19 +15,11 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from cam.config import Settings
 from cam.db.models import Entity, Event
 from cam.ingestion.cfpb import compute_complaint_rate, detect_complaint_spike
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Default weights (overridable via env vars in cam/config.py)
-# ---------------------------------------------------------------------------
-
-DEFAULT_WEIGHT_OSHA_RATE = 0.25
-DEFAULT_WEIGHT_EPA_RATE = 0.20
-DEFAULT_WEIGHT_CFPB_SPIKE = 0.20
-DEFAULT_WEIGHT_AGENCY_OVERLAP = 0.35
 
 
 # ---------------------------------------------------------------------------
@@ -70,18 +62,21 @@ def agency_overlap_bonus(n_agencies: int) -> float:
 
 
 def _get_weights() -> tuple[float, float, float, float]:
-    """Return (w_osha, w_epa, w_cfpb, w_overlap) from Settings or defaults."""
-    try:
-        from cam.config import get_settings
+    """Return (w_osha, w_epa, w_cfpb, w_overlap) from Settings or field defaults."""
+    from cam.config import get_settings
 
+    try:
         s = get_settings()
         return s.weight_osha_rate, s.weight_epa_rate, s.weight_cfpb_spike, s.weight_agency_overlap
     except Exception:
+        # Fall back to Settings field defaults when env is not fully configured
+        # (e.g. missing required DATABASE_URL in unit tests).
+        fields = Settings.model_fields
         return (
-            DEFAULT_WEIGHT_OSHA_RATE,
-            DEFAULT_WEIGHT_EPA_RATE,
-            DEFAULT_WEIGHT_CFPB_SPIKE,
-            DEFAULT_WEIGHT_AGENCY_OVERLAP,
+            fields["weight_osha_rate"].default,
+            fields["weight_epa_rate"].default,
+            fields["weight_cfpb_spike"].default,
+            fields["weight_agency_overlap"].default,
         )
 
 
@@ -216,7 +211,7 @@ def compute_agency_summary(
             func.coalesce(func.sum(Event.penalty_usd), 0).label("penalty"),
         ).where(
             Event.entity_id == entity_id,
-            Event.source == "epa",
+            Event.source == "epa_echo",
             Event.event_type == "violation",
             Event.event_date >= period_start,
             Event.event_date <= period_end,
@@ -243,17 +238,17 @@ def compute_agency_summary(
         return 2.0 if violation_count > 0 else 0.0
 
     osha_vs_benchmark = _benchmark_ratio(osha_violation_count, "osha")
-    epa_vs_benchmark = _benchmark_ratio(epa_violation_count, "epa")
+    epa_vs_benchmark = _benchmark_ratio(epa_violation_count, "epa_echo")
 
     # --- CFPB ---
     cfpb_rate_result = compute_complaint_rate(
-        entity_id, period_months=max(1, lookback_days // 30), db=db
+        entity_id, period_months=max(1, lookback_days // 30), db=db, period_end=period_end
     )
     cfpb_complaint_rate = 0.0
     if cfpb_rate_result is not None and cfpb_rate_result.rate_per_billion is not None:
         cfpb_complaint_rate = float(cfpb_rate_result.rate_per_billion)
 
-    cfpb_spike = detect_complaint_spike(entity_id, lookback_months=6, db=db)
+    cfpb_spike = detect_complaint_spike(entity_id, lookback_months=6, db=db, period_end=period_end)
 
     # Count CFPB events directly in the lookback window for overlap detection.
     # Using raw count (rather than cfpb_spike / rate) avoids dependence on
