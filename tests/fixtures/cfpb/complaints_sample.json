@@ -1,0 +1,172 @@
+{
+  "hits": {
+    "total": {"value": 11},
+    "hits": [
+      {
+        "_id": "CFPB-2022-001",
+        "_source": {
+          "company": "WELLS FARGO BANK, NATIONAL ASSOCIATION",
+          "date_received": "2022-01-10",
+          "product": "Checking or savings account",
+          "sub_product": "Checking account",
+          "issue": "Managing an account",
+          "sub_issue": "Deposits and withdrawals",
+          "state": "CA",
+          "complaint_what_happened": "Bank froze account without notice.",
+          "company_response": "Closed with explanation",
+          "timely": "Yes"
+        }
+      },
+      {
+        "_id": "CFPB-2022-002",
+        "_source": {
+          "company": "WELLS FARGO BANK, NATIONAL ASSOCIATION",
+          "date_received": "2022-02-14",
+          "product": "Mortgage",
+          "sub_product": "Conventional home mortgage",
+          "issue": "Applying for a mortgage or refinancing an existing mortgage",
+          "sub_issue": "Delays in the application process",
+          "state": "TX",
+          "complaint_what_happened": "Loan officer unresponsive for three weeks.",
+          "company_response": "Closed with monetary relief",
+          "timely": "Yes"
+        }
+      },
+      {
+        "_id": "CFPB-2022-003",
+        "_source": {
+          "company": "BANK OF AMERICA, NATIONAL ASSOCIATION",
+          "date_received": "2022-03-05",
+          "product": "Credit card or prepaid card",
+          "sub_product": "General-purpose credit card or charge card",
+          "issue": "Fees or interest",
+          "sub_issue": "Unexpected increase in interest rate",
+          "state": "NY",
+          "complaint_what_happened": "Interest rate increased without proper notice.",
+          "company_response": "Closed with explanation",
+          "timely": "Yes"
+        }
+      },
+      {
+        "_id": "CFPB-2022-004",
+        "_source": {
+          "company": "JPMORGAN CHASE BANK, NATIONAL ASSOCIATION",
+          "date_received": "2022-04-18",
+          "product": "Checking or savings account",
+          "sub_product": "Savings account",
+          "issue": "Managing an account",
+          "sub_issue": "Problem making or receiving payments",
+          "state": "IL",
+          "complaint_what_happened": "Wire transfer delayed for 7 business days.",
+          "company_response": "Closed with monetary relief",
+          "timely": "Yes"
+        }
+      },
+      {
+        "_id": "CFPB-2022-005",
+        "_source": {
+          "company": "CITIBANK, N.A.",
+          "date_received": "2022-05-22",
+          "product": "Student loan",
+          "sub_product": "Private student loan",
+          "issue": "Dealing with your lender or servicer",
+          "sub_issue": "Trouble with how payments are being handled",
+          "state": "FL",
+          "complaint_what_happened": "Payments misapplied to wrong account.",
+          "company_response": "Closed with monetary relief",
+          "timely": "Yes"
+        }
+      },
+      {
+        "_id": "CFPB-2022-006",
+        "_source": {
+          "company": "WELLS FARGO BANK, NATIONAL ASSOCIATION",
+          "date_received": "2022-06-30",
+          "product": "Mortgage",
+          "sub_product": "FHA mortgage",
+          "issue": "Trouble during payment process",
+          "sub_issue": "Escrow, taxes, or insurance",
+          "state": "AZ",
+          "complaint_what_happened": "Escrow account overcharged by $800.",
+          "company_response": "Closed with monetary relief",
+          "timely": "Yes"
+        }
+      },
+      {
+        "_id": "CFPB-2022-007",
+        "_source": {
+          "company": "BANK OF AMERICA, NATIONAL ASSOCIATION",
+          "date_received": "2022-07-11",
+          "product": "Debt collection",
+          "sub_product": "Credit card debt",
+          "issue": "Attempts to collect debt not owed",
+          "sub_issue": "Debt was result of identity theft",
+          "state": "OH",
+          "complaint_what_happened": "Collection calls for debt I do not owe.",
+          "company_response": "Closed with non-monetary relief",
+          "timely": "Yes"
+        }
+      },
+      {
+        "_id": "CFPB-2022-008",
+        "_source": {
+          "company": "JPMORGAN CHASE BANK, NATIONAL ASSOCIATION",
+          "date_received": "2022-08-25",
+          "product": "Credit card or prepaid card",
+          "sub_product": "General-purpose credit card or charge card",
+          "issue": "Problem with a purchase shown on your statement",
+          "sub_issue": "Credit card company isn't resolving a dispute about a purchase on your statement",
+          "state": "WA",
+          "complaint_what_happened": "Fraudulent charge not removed after 90 days.",
+          "company_response": "Closed with monetary relief",
+          "timely": "No"
+        }
+      },
+      {
+        "_id": "CFPB-2022-009",
+        "_source": {
+          "company": "CITIBANK, N.A.",
+          "date_received": "2022-09-14",
+          "product": "Checking or savings account",
+          "sub_product": "Checking account",
+          "issue": "Closing an account",
+          "sub_issue": "Can't close your account",
+          "state": "GA",
+          "complaint_what_happened": "Unable to close account after multiple requests.",
+          "company_response": "Closed with explanation",
+          "timely": "Yes"
+        }
+      },
+      {
+        "_id": "CFPB-2022-010",
+        "_source": {
+          "company": "WELLS FARGO BANK, NATIONAL ASSOCIATION",
+          "date_received": "2022-10-03",
+          "product": "Vehicle loan or lease",
+          "sub_product": "Loan",
+          "issue": "Managing the loan or lease",
+          "sub_issue": "Problem with fees charged",
+          "state": "CO",
+          "complaint_what_happened": "Prepayment penalty applied incorrectly.",
+          "company_response": "Closed with monetary relief",
+          "timely": "Yes"
+        }
+      },
+      {
+        "_id": "CFPB-2021-OLD",
+        "_source": {
+          "company": "WELLS FARGO BANK, NATIONAL ASSOCIATION",
+          "date_received": "2021-11-15",
+          "product": "Checking or savings account",
+          "sub_product": "Checking account",
+          "issue": "Managing an account",
+          "sub_issue": "Fee problem",
+          "state": "CA",
+          "complaint_what_happened": "Overdraft fees charged in error.",
+          "company_response": "Closed with monetary relief",
+          "timely": "Yes"
+        }
+      }
+    ]
+  }
+}
