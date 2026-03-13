@@ -332,6 +332,7 @@ def compute_complaint_rate(
     period_months: int = 12,
     *,
     db: Session,
+    period_end: date | None = None,
 ) -> ComplaintRate | None:
     """Return complaint rate per $1B total assets for the trailing period.
 
@@ -343,8 +344,9 @@ def compute_complaint_rate(
     entity_id:     Entity to compute rate for.
     period_months: Trailing window in months (approximate: uses 30d/month).
     db:            SQLAlchemy session.
+    period_end:    End of the analysis window (default: today).
     """
-    period_end = date.today()
+    period_end = period_end or date.today()
     period_start = period_end - timedelta(days=period_months * 30)
 
     # Count complaints in the window using SQL COUNT — avoids loading full rows
@@ -397,6 +399,7 @@ def detect_complaint_spike(
     threshold_pct: float = 50.0,
     *,
     db: Session,
+    period_end: date | None = None,
 ) -> bool:
     """Return True if complaint rate has spiked in the recent half of the lookback.
 
@@ -408,12 +411,13 @@ def detect_complaint_spike(
 
     Parameters
     ----------
-    entity_id:      Entity to check.
+    entity_id:       Entity to check.
     lookback_months: Total window to analyse (split evenly into two halves).
     threshold_pct:   Percentage increase that constitutes a spike (default 50%).
-    db:             SQLAlchemy session.
+    db:              SQLAlchemy session.
+    period_end:      End of the analysis window (default: today).
     """
-    today = date.today()
+    today = period_end or date.today()
     half = max(1, lookback_months // 2)
     recent_start = today - timedelta(days=half * 30)
     prior_start = today - timedelta(days=lookback_months * 30)

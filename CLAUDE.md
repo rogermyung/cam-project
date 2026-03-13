@@ -40,9 +40,9 @@ tests/
 **All module specifications are in `PLAN.md`.** When implementing a module:
 
 1. **Read `PLAN.md`** — find the module section (e.g. `## M3 — OSHA Ingestion`). Follow its Goal, Key Functions, Schema Mapping, Test Requirements, and Acceptance Criteria exactly.
-2. **Check dependencies** — do not start a module until its listed dependencies are marked complete in the Module Index table in `PLAN.md`.
+2. **Check dependencies** — use GitHub issues as the source of truth (CLOSED = complete). Run `gh issue list --limit 20 --state all`, cross-reference PLAN.md's Module Index, and sync this table: CLOSED+TODO/In-Progress → ✅ Complete (with PR); starting now → 🔄 In Progress. Stop if any dependency is OPEN.
 3. **Create a branch** named `module/m<N>-<short-name>` (e.g. `module/m3-osha-ingestion`).
-4. **Comment on the GitHub issue** (`gh issue comment <N>`) to mark it in-progress before starting.
+4. **Mark in-progress** — update this table to `🔄 In Progress` for the module being started, then comment on the GitHub issue (`gh issue comment <N>`) to mark it in-progress.
 5. **Implement** the module per the PLAN.md spec. Key conventions:
    - All config from `cam/config.py` (Pydantic Settings, env vars)
    - All external HTTP calls use `httpx` with `tenacity` retry; mock with `responses` or `httpx` mock in tests
@@ -70,8 +70,8 @@ tests/
 | M2 — EDGAR Ingestion | #3 | ✅ Complete | #18 |
 | M3 — OSHA Ingestion | #4 | ✅ Complete | #19 |
 | M4 — EPA Ingestion | #5 | ✅ Complete | #20 |
-| M5 — CFPB Ingestion | #6 | ⬜ TODO | — |
-| M6 — Cross-Agency Aggregation | #7 | ⬜ TODO | — |
+| M5 — CFPB Ingestion | #6 | ✅ Complete | #22 |
+| M6 — Cross-Agency Aggregation | #7 | 🔄 In Progress | — |
 | M7 — 10-K Risk Language NLP | #8 | ⬜ TODO | — |
 | M8 — Earnings Call NLP | #9 | ⬜ TODO | — |
 | M9 — Proxy Statement Parser | #10 | ⬜ TODO | — |
