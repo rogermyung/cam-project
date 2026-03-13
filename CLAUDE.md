@@ -58,8 +58,8 @@ tests/
    .venv/bin/ruff format <files>         # format
    ```
 9. **Commit** with message `M<N>: <Title> — <brief summary>\n\nCloses #<issue>\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`
-9. **Push** and **create a PR** with `gh pr create --base main` including a summary and test plan.
-10. **Update the GitHub issue** with a completion comment listing delivered items.
+10. **Push** and **create a PR** with `gh pr create --base main` including a summary and test plan.
+11. **Update the GitHub issue** with a completion comment listing delivered items.
 
 ## Module Status
 
@@ -67,9 +67,9 @@ tests/
 |--------|-------|--------|-----|
 | M0 — Project Scaffolding | #1 | ✅ Complete | #16 |
 | M1 — Entity Resolution | #2 | ✅ Complete | #17 |
-| M2 — EDGAR Ingestion | #3 | ⬜ TODO | — |
-| M3 — OSHA Ingestion | #4 | ⬜ TODO | — |
-| M4 — EPA Ingestion | #5 | ⬜ TODO | — |
+| M2 — EDGAR Ingestion | #3 | ✅ Complete | #18 |
+| M3 — OSHA Ingestion | #4 | ✅ Complete | #19 |
+| M4 — EPA Ingestion | #5 | ✅ Complete | #20 |
 | M5 — CFPB Ingestion | #6 | ⬜ TODO | — |
 | M6 — Cross-Agency Aggregation | #7 | ⬜ TODO | — |
 | M7 — 10-K Risk Language NLP | #8 | ⬜ TODO | — |
@@ -80,6 +80,22 @@ tests/
 | M12 — PE/Bankruptcy Correlator | #13 | ⬜ TODO | — |
 | M13 — Alert Scoring Engine | #14 | ⬜ TODO | — |
 | M14 — Output Layer | #15 | ⬜ TODO | — |
+
+## Skills (Slash Commands)
+
+Three project-specific skills live in `.claude/commands/`:
+
+- `/start-issue <N>` — Read M\<N\> spec from PLAN.md, check deps, create branch, comment on issue
+- `/create-pr` — Run ruff, run tests, commit staged changes, push, open PR
+- `/qodo-review` — Fetch and display all review comments from qodo-merge-pro[bot] on the current PR (inline + issue-level; includes action-required bugs and general feedback)
+
+## Ingestion Gotchas
+
+Patterns confirmed across M2–M4 that must be followed in all ingestion modules:
+
+- **Transaction ownership**: call `bulk_resolve(..., commit=False)`; the ingestion function issues the single `db.commit()` at the end. This keeps the whole ingest atomic and lets the caller control visibility — `bulk_resolve(commit=True)` does a single post-batch commit which is fine for interactive use but wrong for bulk ingestion where the caller must own the boundary.
+- **Facility name cleaning**: strip `" - LOCATION"` suffix (`r"\s+-\s+[A-Z0-9 ]+$"`) before passing names to `bulk_resolve`. Both OSHA and EPA facilities use this pattern.
+- **Date guard**: `_parse_date()` returns `None` for unparseable values. Since-date filters must use `d is not None and d >= since_date` — never `d is None or d >= since_date` (the latter silently admits unparseable rows).
 
 ## Testing Conventions
 
