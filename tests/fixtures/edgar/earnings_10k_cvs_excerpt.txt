@@ -1,0 +1,23 @@
+CVS Health Corporation
+Annual Report on Form 10-K
+For the fiscal year ended December 31, 2023
+
+ITEM 1. BUSINESS
+
+CVS Health Corporation is a health solutions company with a purpose of bringing its heart to every moment of your health. The Company has approximately 9,000 retail pharmacy locations, a leading pharmacy benefit management business, and one of the nation's largest health insurers serving approximately 35 million people.
+
+The Company offers a broad range of health-related products and services. Our Pharmacy Services segment provides a full range of prescription benefit management services including plan design and administration, formulary management and administration, Medicare Part D services, mail order pharmacy, specialty pharmacy services and pharmacy network services.
+
+ITEM 1A. RISK FACTORS
+
+The Company faces significant competition in all of its business segments. Competitors include other pharmacy benefit managers, health insurers, retail pharmacies, and mail order pharmacies.
+
+The Company is subject to extensive federal, state and local laws and regulations governing the provision of health insurance, the operation of pharmacy benefit management programs, the dispensing of drugs, and the privacy and security of protected health information.
+
+Litigation risks include class action lawsuits related to prescription benefit management practices, insurance claims handling, and data privacy. The Company has received regulatory inquiries from state attorneys general related to certain pharmacy benefit management practices.
+
+The Company relies on its technology systems to manage customer records, process claims, and deliver services. Cybersecurity incidents could disrupt operations and expose sensitive member data.
+
+Changes in healthcare legislation, drug pricing regulation, or Medicare and Medicaid reimbursement rates could materially affect the Company's revenue and profitability.
+
+The Company's integrated care delivery model depends on maintaining licenses and government contracts in all jurisdictions where it operates.
