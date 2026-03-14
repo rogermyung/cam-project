@@ -149,12 +149,14 @@ class ProxyData:
 # Vote percentage extraction helpers
 # ---------------------------------------------------------------------------
 
-# Match "Votes For: 45,230,000 (58.3%)" or "For: 58.3%" or "FOR 58.3%"
+# Match vote percentage lines in common proxy formats:
+#   "Votes For: 45,230,000 (58.3%)"  — count + parenthesised pct
+#   "For: 58.3%"  or  "For | 58.3%"  — label + bare pct, colon or pipe separator
 _PCT_LINE = re.compile(
     r"(?:votes?\s+)?(?P<label>for|against|abstain\w*)"
     r"[:\s|]+[\d,]+\s+\((?P<pct>[\d.]+)%\)"
     r"|"
-    r"(?:votes?\s+)?(?P<label2>for|against)\s*[:\s]+(?P<pct2>[\d.]+)%",
+    r"(?:votes?\s+)?(?P<label2>for|against)\s*[:\s|]+(?P<pct2>[\d.]+)%",
     re.IGNORECASE,
 )
 
@@ -302,13 +304,13 @@ def parse_proxy(filing_text: str, filing_date: date) -> ProxyData:
         )
         if is_say_on_pay and result.say_on_pay_pct is None:
             result.say_on_pay_pct = for_pct
-            continue  # don't also treat as a shareholder proposal
+            # Do NOT continue: the same block may also contain shareholder proposals
+            # if the proposal splitter failed to separate them into distinct blocks.
 
         # --- Shareholder proposals ---
-        # Identified by "RESOLVED" clause or "Shareholder Proposal" header
-        is_shareholder = bool(
-            re.search(r"\bRESOLVED\b|shareholder\s+proposal", block, re.IGNORECASE)
-        )
+        # Identified by "RESOLVED" clause only — "Shareholder Proposals" section headers
+        # appear in the say-on-pay block and must not trigger spurious proposal detection.
+        is_shareholder = bool(re.search(r"\bRESOLVED\b", block, re.IGNORECASE))
         if not is_shareholder:
             continue
 

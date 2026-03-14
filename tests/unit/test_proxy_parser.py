@@ -297,6 +297,84 @@ Abstentions: 3,000,000 (5.2%)
 
 
 # ---------------------------------------------------------------------------
+# Regression: say-on-pay block also contains a shareholder proposal
+# ---------------------------------------------------------------------------
+
+
+def test_parse_say_on_pay_block_with_embedded_proposal():
+    """If say-on-pay and a shareholder proposal share a block, both should be parsed.
+
+    Regression for bug where `continue` after say-on-pay detection caused
+    any shareholder proposal content in the same block to be silently dropped.
+    """
+    text = """
+Proposal 1: Advisory Vote on Executive Compensation and Proposal 2 Combined Section.
+Advisory vote on executive compensation (say-on-pay).
+The Board recommends a vote FOR this proposal.
+VOTE RESULTS:
+Votes For: 50,000,000 (75.0%)
+Votes Against: 15,000,000 (22.5%)
+Abstentions: 1,500,000 (2.5%)
+
+Shareholder Proposal on Worker Welfare
+Submitted by: AFL-CIO Reserve Fund
+RESOLVED, that shareholders request a report on worker health, safety, and wages.
+The Board recommends a vote AGAINST this proposal.
+VOTE RESULTS:
+Votes For: 22,000,000 (33.0%)
+Votes Against: 43,000,000 (64.5%)
+Abstentions: 1,667,000 (2.5%)
+"""
+    result = parse_proxy(text, date(2023, 1, 1))
+    assert result.say_on_pay_pct is not None
+    assert abs(result.say_on_pay_pct - 75.0) < 0.1
+    assert len(result.shareholder_proposals) >= 1
+    topics = {p.topic for p in result.shareholder_proposals}
+    assert "worker_welfare" in topics
+
+
+# ---------------------------------------------------------------------------
+# Regression: pipe-delimited percentage tables
+# ---------------------------------------------------------------------------
+
+
+def test_parse_pipe_delimited_pct():
+    """Vote results in pipe-delimited format (e.g. 'For | 58.3%') should parse correctly."""
+    text = """
+Proposal 1: Advisory Vote on Executive Compensation.
+The Board recommends a vote FOR this proposal.
+VOTE RESULTS:
+For | 74.2%
+Against | 24.1%
+Abstentions | 1.7%
+"""
+    result = parse_proxy(text, date(2023, 1, 1))
+    assert result.say_on_pay_pct is not None
+    assert abs(result.say_on_pay_pct - 74.2) < 0.1
+
+
+def test_parse_pipe_delimited_shareholder_proposal():
+    """Pipe-delimited vote tables in shareholder proposal blocks are parsed correctly."""
+    text = """
+Proposal 3: Shareholder Proposal on Political Spending Disclosure.
+Submitted by: NorthStar Asset Management
+RESOLVED, that shareholders request disclosure of all political contributions and lobbying expenditures.
+The Board recommends a vote AGAINST this proposal.
+VOTE RESULTS:
+For | 28.5%
+Against | 69.9%
+Abstentions | 1.6%
+"""
+    result = parse_proxy(text, date(2023, 1, 1))
+    assert len(result.shareholder_proposals) == 1
+    prop = result.shareholder_proposals[0]
+    assert abs(prop.vote_for_pct - 28.5) < 0.1
+    assert abs(prop.vote_against_pct - 69.9) < 0.1
+    assert prop.passed is False
+    assert prop.topic == "political_spending"
+
+
+# ---------------------------------------------------------------------------
 # flag_escalating_minority
 # ---------------------------------------------------------------------------
 
