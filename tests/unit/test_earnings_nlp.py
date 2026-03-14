@@ -189,6 +189,36 @@ def test_score_transcript_deduplication():
         seen.add(key)
 
 
+def test_score_transcript_correct_sentence_attribution():
+    """Each hit's text must be the sentence that actually contains that specific occurrence.
+
+    Regression for bug where all occurrences of a phrase were attributed to the
+    first sentence containing it, causing later occurrences to be deduped away.
+    """
+    text = (
+        "First sentence mentions captive as a general concept about captive insurance. "
+        "Second sentence is about our captive network strategy and preferred network steering."
+    )
+    result = score_transcript(text, patterns={"captive_strategy": ["captive network"]})
+    hits = result.pattern_hits["captive_strategy"]
+    # 'captive network' appears only in the second sentence
+    assert len(hits) == 1
+    assert "captive network" in hits[0].text.lower()
+    # The context must also contain the phrase
+    assert "captive network" in hits[0].context.lower()
+
+
+def test_score_transcript_context_contains_phrase():
+    """PatternHit.context must always contain the matched phrase."""
+    text = (FIXTURES / "earnings_cvs_2023.txt").read_text()
+    result = score_transcript(text)
+    for hits in result.pattern_hits.values():
+        for hit in hits:
+            assert hit.pattern.lower() in hit.context.lower(), (
+                f"Context does not contain '{hit.pattern}': {hit.context!r}"
+            )
+
+
 def test_score_transcript_non_standard_formatting():
     """Transcripts with unusual formatting (no punctuation, ALL CAPS) handled gracefully."""
     text = (

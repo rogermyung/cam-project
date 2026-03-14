@@ -99,6 +99,34 @@ def _get_sentences(text: str) -> list[str]:
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
 
 
+def _sentence_spans(text: str) -> list[tuple[int, int, str]]:
+    """Return (start, end, sentence_text) for each sentence in the original text.
+
+    Iterates sentence-boundary splits while tracking cumulative character
+    offsets so that span indices are valid for slicing ``text`` directly.
+    """
+    spans: list[tuple[int, int, str]] = []
+    pos = 0
+    for raw in re.split(r"(?<=[.!?])\s+", text):
+        stripped = raw.strip()
+        if not stripped:
+            pos += len(raw) + 1  # +1 for the split whitespace consumed
+            continue
+        start = text.find(stripped, pos)
+        if start == -1:
+            start = pos
+        end = start + len(stripped)
+        spans.append((start, end, stripped))
+        pos = end
+    return spans
+
+
+def _phrase_pattern(phrase: str) -> re.Pattern[str]:
+    """Build a case-insensitive regex for ``phrase``, allowing any whitespace between words."""
+    parts = [re.escape(w) for w in phrase.split()]
+    return re.compile(r"\s+".join(parts), re.IGNORECASE)
+
+
 def _extract_context(text: str, match_start: int, match_end: int) -> str:
     """Return ±_CONTEXT_WINDOW chars around the match."""
     start = max(0, match_start - _CONTEXT_WINDOW)
@@ -131,23 +159,22 @@ def score_transcript(
     if patterns is None:
         patterns = EXTRACTION_PATTERNS
 
-    norm_text = _normalise(transcript_text)
-    sentences = _get_sentences(transcript_text)
+    # Pre-compute sentence spans with correct offsets into the original text
+    sent_spans = _sentence_spans(transcript_text)
 
     hits: dict[str, list[PatternHit]] = {cat: [] for cat in patterns}
 
     for cat, phrases in patterns.items():
         for phrase in phrases:
-            norm_phrase = phrase.lower()
-            # Search in normalised text for case-insensitive match
-            for m in re.finditer(re.escape(norm_phrase), norm_text):
-                # Map back to original text position (approximate via offset)
+            phrase_re = _phrase_pattern(phrase)
+            # Search directly in original text — offsets are valid for context slicing
+            for m in phrase_re.finditer(transcript_text):
                 context = _extract_context(transcript_text, m.start(), m.end())
-                # Find the sentence containing this match
+                # Find the sentence whose span contains this specific match
                 sentence = ""
-                for s in sentences:
-                    if norm_phrase in _normalise(s):
-                        sentence = s
+                for s_start, s_end, s_text in sent_spans:
+                    if s_start <= m.start() < s_end:
+                        sentence = s_text
                         break
                 hits[cat].append(
                     PatternHit(
@@ -270,14 +297,10 @@ _encoder_cache: object | None = None
 def _default_encoder() -> object:
     global _encoder_cache
     if _encoder_cache is None:
-        try:
-            from cam.config import Settings as _Settings
-
-            model_name = _Settings.model_fields["risk_encoder_model"].default
-        except Exception:  # pragma: no cover
-            model_name = "sentence-transformers/all-MiniLM-L6-v2"
-
         from sentence_transformers import SentenceTransformer
 
+        from cam.config import Settings as _Settings
+
+        model_name = _Settings.model_fields["risk_encoder_model"].default
         _encoder_cache = SentenceTransformer(model_name)
     return _encoder_cache
