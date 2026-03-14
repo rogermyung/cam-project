@@ -73,6 +73,8 @@ tests/
 | M5 — CFPB Ingestion | #6 | ✅ Complete | #22 |
 | M6 — Cross-Agency Aggregation | #7 | ✅ Complete | #23 |
 | M7 — 10-K Risk Language NLP | #8 | ✅ Complete | #24 |
+| M8 — Earnings Call NLP | #9 | ✅ Complete | #25 |
+| M9 — Proxy Statement Parser | #10 | 🔄 In Progress | — |
 | M8 — Earnings Call NLP | #9 | 🔄 In Progress | — |
 | M9 — Proxy Statement Parser | #10 | ⬜ TODO | — |
 | M10 — HSR Merger Screener | #11 | ⬜ TODO | — |
