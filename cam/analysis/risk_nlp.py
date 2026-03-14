@@ -33,8 +33,19 @@ RISK_TOPICS: list[str] = [
     "antitrust_competition",  # market concentration, DOJ/FTC investigation
 ]
 
-SIMILARITY_THRESHOLD: float = 0.75  # cosine sim below which a sentence is "new"
-MIN_SENTENCE_WORDS: int = 8  # filter out one-line stubs
+try:
+    from cam.config import Settings as _Settings
+
+    _cfg = _Settings.model_fields
+    SIMILARITY_THRESHOLD: float = _cfg["risk_similarity_threshold"].default  # type: ignore[assignment]
+    MIN_SENTENCE_WORDS: int = _cfg["risk_min_sentence_words"].default  # type: ignore[assignment]
+    _ENCODER_MODEL: str = _cfg["risk_encoder_model"].default  # type: ignore[assignment]
+    _CLASSIFIER_MODEL: str = _cfg["risk_classifier_model"].default  # type: ignore[assignment]
+except Exception:  # pragma: no cover
+    SIMILARITY_THRESHOLD = 0.75
+    MIN_SENTENCE_WORDS = 8
+    _ENCODER_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+    _CLASSIFIER_MODEL = "facebook/bart-large-mnli"
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -84,7 +95,7 @@ _ITEM_1A_START = re.compile(
     re.IGNORECASE,
 )
 _NEXT_ITEM_START = re.compile(
-    r"ITEM\s+(?:1B|2)\.?\b",
+    r"ITEM\s+\d+[A-Z]?\.?\b|PART\s+II\b|FINANCIAL\s+STATEMENTS\b",
     re.IGNORECASE,
 )
 
@@ -101,8 +112,10 @@ def extract_risk_section(filing_text: str) -> str:
     filing_text:
         Raw 10-K filing content (HTML or plain text).
     """
-    # Normalise HTML → plain text
-    text = _strip_html(filing_text) if ("<" in filing_text and ">" in filing_text) else filing_text
+    # Normalise HTML → plain text (use tag regex, not bare < > check, to avoid
+    # false positives on plain-text filings with comparison operators)
+    _HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>|<!DOCTYPE", re.IGNORECASE)
+    text = _strip_html(filing_text) if _HTML_TAG_RE.search(filing_text) else filing_text
 
     # Collapse excessive whitespace for cleaner regex matching
     text = re.sub(r"[ \t]+", " ", text)
@@ -149,7 +162,7 @@ def _default_encoder() -> object:
     if _encoder_cache is None:
         from sentence_transformers import SentenceTransformer
 
-        _encoder_cache = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        _encoder_cache = SentenceTransformer(_ENCODER_MODEL)
     return _encoder_cache
 
 
@@ -160,7 +173,7 @@ def _default_classifier() -> object:
 
         _classifier_cache = pipeline(
             "zero-shot-classification",
-            model="facebook/bart-large-mnli",
+            model=_CLASSIFIER_MODEL,
         )
     return _classifier_cache
 
@@ -293,8 +306,8 @@ def compute_risk_expansion(
     for sentence in new_sentences:
         scores = classify_risk_topics(sentence, topics, classifier=classifier)
         evidence.append({"text": sentence, "topics": scores})
-        for t, score in scores.items():
-            topic_hit_scores[t].append(score)
+        for t in topics:
+            topic_hit_scores[t].append(float(scores.get(t, 0.0)))
 
     topic_scores = {
         t: (sum(hits) / len(hits) if hits else 0.0) for t, hits in topic_hit_scores.items()

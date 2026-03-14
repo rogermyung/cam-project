@@ -88,6 +88,18 @@ def test_strip_html_plain_text_passthrough():
     assert "plain text" in result
 
 
+def test_extract_risk_section_plain_text_with_angle_brackets():
+    """Plain text containing < or > (e.g. comparison operators) must not be stripped."""
+    text = (
+        "ITEM 1A. RISK FACTORS\n"
+        "Revenue > $1B threshold may trigger regulatory review under Section 7A.\n"
+        "ITEM 1B. UNRESOLVED STAFF COMMENTS\nNone."
+    )
+    section = extract_risk_section(text)
+    assert "Revenue" in section
+    assert ">" in section  # angle bracket preserved, not stripped
+
+
 # ---------------------------------------------------------------------------
 # _split_sentences
 # ---------------------------------------------------------------------------
@@ -148,6 +160,7 @@ def test_extract_risk_section_heuristic_fallback():
     text = "Annual Report\n\nRisk Factors\nThe company faces many risks in its operations and markets.\n\nFinancial Statements\nSome financials."
     section = extract_risk_section(text)
     assert "faces many risks" in section
+    assert "Financial Statements" not in section
 
 
 def test_extract_risk_section_no_header_returns_full_text():
@@ -392,6 +405,26 @@ def test_evidence_structure():
         assert "text" in item
         assert "topics" in item
         assert isinstance(item["topics"], dict)
+
+
+def test_extra_classifier_label_no_crash():
+    """If an injected classifier returns extra labels not in topics, no KeyError is raised."""
+
+    def noisy_classifier(text: str, topics: list[str], multi_label: bool = True) -> dict:
+        return {
+            "labels": topics + ["unexpected_extra"],
+            "scores": [0.5] * len(topics) + [0.9],
+        }
+
+    current = "The company faces antitrust regulatory investigation by the Department of Justice."
+    result = compute_risk_expansion(
+        current,
+        "",
+        topics=RISK_TOPICS,
+        encoder=_hash_encoder,
+        classifier=noisy_classifier,
+    )
+    assert set(result.topic_scores.keys()) == set(RISK_TOPICS)
 
 
 # ---------------------------------------------------------------------------
