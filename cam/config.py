@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     nlp_model_dir: str = Field(default="./models")
     nlp_device: str = Field(default="cpu")
 
+    # Risk NLP (M7)
+    risk_encoder_model: str = Field(default="sentence-transformers/all-MiniLM-L6-v2")
+    risk_classifier_model: str = Field(default="facebook/bart-large-mnli")
+    risk_similarity_threshold: float = Field(default=0.75)
+    risk_min_sentence_words: int = Field(default=8)
+
     # Aggregation weights (M6)
     weight_osha_rate: float = Field(default=0.25)
     weight_epa_rate: float = Field(default=0.20)

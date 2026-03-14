@@ -71,8 +71,8 @@ tests/
 | M3 — OSHA Ingestion | #4 | ✅ Complete | #19 |
 | M4 — EPA Ingestion | #5 | ✅ Complete | #20 |
 | M5 — CFPB Ingestion | #6 | ✅ Complete | #22 |
-| M6 — Cross-Agency Aggregation | #7 | 🔄 In Progress | — |
-| M7 — 10-K Risk Language NLP | #8 | ⬜ TODO | — |
+| M6 — Cross-Agency Aggregation | #7 | ✅ Complete | #23 |
+| M7 — 10-K Risk Language NLP | #8 | 🔄 In Progress | — |
 | M8 — Earnings Call NLP | #9 | ⬜ TODO | — |
 | M9 — Proxy Statement Parser | #10 | ⬜ TODO | — |
 | M10 — HSR Merger Screener | #11 | ⬜ TODO | — |
