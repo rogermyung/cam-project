@@ -263,27 +263,36 @@ This ensures zero duplicate alerts per entity per threshold within any time peri
 
 *(Planned — not yet implemented)*
 
-### REST API (FastAPI)
+M14 uses a **static site export** pattern. After the daily scoring run, a single export function reads the completed `alert_scores`, `entities`, and `signals` tables and writes a self-contained directory of JSON files. These files are uploaded to S3/CDN (or GitHub Pages) and require no live database at serve time.
+
+### Static Data Export
+
+`export_static_site(output_dir, *, db)` writes:
 
 ```
-GET  /entities                          # All entities with current scores
-GET  /entities/{id}                     # Detail: scores + signals + evidence
-GET  /entities/{id}/timeline            # Score history
-GET  /alerts?level=elevated&since=date  # Recent alerts
-GET  /alerts/{id}                       # Alert detail
-GET  /reports/pe-comparison/{naics}     # PE vs non-PE for a sector
-GET  /reports/industry-benchmarks       # Violation rates by industry
+{output_dir}/
+├── meta.json                    # exported_at, entity_count, alert_count
+├── alerts.json                  # all alerts: critical → elevated → watch, date desc
+├── entities.json                # all entity summaries with current scores
+└── entities/
+    └── {entity_id}.json         # per-entity: score history + component breakdown + evidence
 ```
 
-Authentication: Bearer token via `Authorization: Bearer <API_AUTH_TOKEN>`.
+Export is idempotent — files are written atomically (temp file → rename) so partial exports are never visible.
 
-### Dashboard
+### Static HTML Dashboard
 
-Server-rendered HTML using Jinja2 templates (no JavaScript framework). Priority views: alert feed, entity detail, industry view, merger watch.
+Minimal vanilla-JS pages that load exported JSON via `fetch()`. No build step, no framework. Renders correctly from `file://` URI or any CDN.
+
+Priority pages:
+
+1. **index.html** — Alert feed sorted by severity (critical first)
+2. **entity.html?id={uuid}** — Score timeline, component breakdown, evidence links
+3. **industries.html** — All entities grouped by 2-digit NAICS, sorted by score
 
 ### Weekly Digest
 
-Plaintext email digest (SMTP via `cam/config.py`) summarizing new critical/elevated alerts, high-scoring mergers, and sectors with rising aggregate scores.
+`export_digest(since_date, *, db)` returns a plaintext email body. The caller is responsible for SMTP delivery (configured via `cam/config.py`).
 
 ---
 
@@ -303,10 +312,12 @@ Key thresholds (from `cam/config.py`):
 
 ## 9. Task Queue Architecture
 
-Celery tasks in `cam/tasks.py` wrap the ingestion and scoring functions for scheduled execution:
+`cam/tasks.py` instantiates the Celery application (`celery_app`). Individual `@celery_app.task` wrappers for ingestion and scoring are **not yet implemented** — the functions can be invoked directly from the CLI or a scheduler in the interim.
+
+Planned task layout (to be added in a future module):
 
 ```
-cam.tasks
+cam.tasks                            (planned — not yet in cam/tasks.py)
 ├── ingest_osha_task     → cam.ingestion.osha.ingest_osha_violations
 ├── ingest_epa_task      → cam.ingestion.epa.ingest_epa_violations
 ├── ingest_cfpb_task     → cam.ingestion.cfpb.ingest_cfpb_complaints
@@ -314,7 +325,7 @@ cam.tasks
 └── daily_scoring_task   → cam.alerts.scorer.run_daily_scoring
 ```
 
-Workers are started with `celery -A cam.tasks worker`. Scheduled runs are configured via Celery Beat (not yet wired up in M13).
+Workers are started with `celery -A cam.tasks worker`. Scheduled runs will be configured via Celery Beat once task wrappers are added.
 
 ---
 

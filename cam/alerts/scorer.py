@@ -46,6 +46,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from cam.config import get_settings
 from cam.db.models import AlertScore, Entity, Signal
 
 logger = logging.getLogger(__name__)
@@ -135,13 +136,48 @@ class Alert:
 # ---------------------------------------------------------------------------
 
 
-def _score_to_level(score: float) -> str | None:
-    """Map a composite score to its alert level string, or None if below watch."""
-    if score >= ALERT_THRESHOLDS["critical"]:
+def _load_runtime_config() -> tuple[dict[str, float], dict[str, float]]:
+    """Return (thresholds, weights) from cam.config Settings.
+
+    Falls back to the module-level defaults when Settings cannot be
+    instantiated (e.g. in unit tests without DATABASE_URL set).
+    """
+    try:
+        s = get_settings()
+        thresholds: dict[str, float] = {
+            "watch": s.alert_threshold_watch,
+            "elevated": s.alert_threshold_elevated,
+            "critical": s.alert_threshold_critical,
+        }
+        weights: dict[str, float] = {
+            "cross_agency_composite": s.weight_cross_agency_composite,
+            "risk_language_expansion": s.weight_risk_language_expansion,
+            "earnings_divergence": s.weight_earnings_divergence,
+            "proxy_escalation": s.weight_proxy_escalation,
+            "merger_vertical_risk": s.weight_merger_vertical_risk,
+            "pe_warn_flag": s.weight_pe_warn_flag,
+        }
+    except Exception:
+        thresholds = ALERT_THRESHOLDS
+        weights = COMPONENT_WEIGHTS
+    return thresholds, weights
+
+
+def _score_to_level(score: float, thresholds: dict[str, float] | None = None) -> str | None:
+    """Map a composite score to its alert level string, or None if below watch.
+
+    Parameters
+    ----------
+    score:      Composite score in [0.0, 1.0].
+    thresholds: Optional threshold dict; defaults to the module-level
+                ``ALERT_THRESHOLDS`` when not supplied (used by tests).
+    """
+    t = thresholds if thresholds is not None else ALERT_THRESHOLDS
+    if score >= t["critical"]:
         return "critical"
-    if score >= ALERT_THRESHOLDS["elevated"]:
+    if score >= t["elevated"]:
         return "elevated"
-    if score >= ALERT_THRESHOLDS["watch"]:
+    if score >= t["watch"]:
         return "watch"
     return None
 
@@ -251,10 +287,11 @@ def compute_entity_score(
     -------
     The :class:`AlertScore` ORM object (either newly created or updated).
     """
+    thresholds, weights = _load_runtime_config()
     component_scores = _get_component_scores(db, entity_id)
-    composite = sum(COMPONENT_WEIGHTS[k] * v for k, v in component_scores.items())
+    composite = sum(weights[k] * v for k, v in component_scores.items())
     composite = min(max(composite, 0.0), 1.0)
-    level = _score_to_level(composite)
+    level = _score_to_level(composite, thresholds)
 
     # Upsert: avoid violating the unique constraint on (entity_id, score_date)
     existing = db.scalars(
@@ -397,7 +434,8 @@ def run_daily_scoring(
     results: list[AlertScore] = []
     for eid in entity_ids:
         try:
-            alert_score = compute_entity_score(eid, score_date, db=db)
+            with db.begin_nested():
+                alert_score = compute_entity_score(eid, score_date, db=db)
             results.append(alert_score)
         except Exception:
             logger.exception("Failed to score entity %s; skipping.", eid)

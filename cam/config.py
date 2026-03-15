@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     alert_threshold_elevated: float = Field(default=0.65)
     alert_threshold_critical: float = Field(default=0.80)
 
+    # Composite score component weights (M13)
+    weight_cross_agency_composite: float = Field(default=0.35)
+    weight_risk_language_expansion: float = Field(default=0.20)
+    weight_earnings_divergence: float = Field(default=0.15)
+    weight_proxy_escalation: float = Field(default=0.15)
+    weight_merger_vertical_risk: float = Field(default=0.10)
+    weight_pe_warn_flag: float = Field(default=0.05)
+
     # Entity resolution thresholds
     entity_fuzzy_threshold: float = Field(default=0.85)
     entity_review_threshold: float = Field(default=0.65)
