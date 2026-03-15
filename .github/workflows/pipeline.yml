@@ -1,0 +1,191 @@
+# CAM Daily Pipeline
+#
+# Runs the full ingest → score → export pipeline on a schedule.
+# Each step is a separate job so they can fail independently and be
+# re-run or skipped individually via workflow_dispatch.
+#
+# Required secrets (Settings → Secrets and variables → Actions):
+#   DATABASE_URL        PostgreSQL connection string (must be publicly reachable)
+#   EDGAR_USER_AGENT    Your email address (SEC EDGAR policy requirement)
+#
+# Optional secrets:
+#   REDIS_URL           Default: redis://localhost:6379/0
+#   S3_BUCKET           Default: cam-documents
+#
+# GitHub Pages setup (for the export → deploy step):
+#   Settings → Pages → Source: "GitHub Actions"
+#
+# NOTE: All workflow_dispatch inputs are passed via environment variables
+# (not inline in run: commands) to prevent command injection.
+
+name: CAM Daily Pipeline
+
+on:
+  schedule:
+    # 06:00 UTC daily
+    - cron: "0 6 * * *"
+
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Ingest since date (YYYY-MM-DD). Default: 30 days ago."
+        required: false
+        default: ""
+      step:
+        description: "Run only this step (leave blank to run all steps in sequence)."
+        required: false
+        type: choice
+        options:
+          - ""
+          - ingest
+          - score
+          - export
+        default: ""
+      score_date:
+        description: "Score date for the 'score' step (YYYY-MM-DD or 'today')."
+        required: false
+        default: "today"
+      deploy_pages:
+        description: "Deploy export output to GitHub Pages after export step."
+        required: false
+        type: boolean
+        default: true
+
+# Prevent concurrent pipeline runs from corrupting shared DB state.
+concurrency:
+  group: cam-pipeline
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Step 1: Ingest
+  # ---------------------------------------------------------------------------
+  ingest:
+    name: Ingest regulatory data
+    runs-on: ubuntu-latest
+    # Run when: scheduled, OR no step filter, OR step == 'ingest'
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event.inputs.step == '' ||
+      github.event.inputs.step == 'ingest'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ingest all sources
+        # Each source is attempted independently inside the entrypoint.
+        # Exit code 1 if any source failed, but others still run.
+        # Score/export will still run on whatever was successfully ingested.
+        run: |
+          ARGS="--source all"
+          if [ -n "$CAM_SINCE" ]; then
+            ARGS="$ARGS --since $CAM_SINCE"
+          fi
+          python -m cam.entrypoint $ARGS
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+          CAM_SINCE: ${{ github.event.inputs.since }}
+
+  # ---------------------------------------------------------------------------
+  # Step 2: Score
+  # ---------------------------------------------------------------------------
+  score:
+    name: Score entities
+    runs-on: ubuntu-latest
+    needs: ingest
+    # Run if ingest succeeded, failed (partial source failure), or was skipped
+    # — scoring always runs on whatever data is in the DB.
+    if: >-
+      always() &&
+      needs.ingest.result != 'cancelled' &&
+      (
+        github.event_name == 'schedule' ||
+        github.event.inputs.step == '' ||
+        github.event.inputs.step == 'score'
+      )
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Score all entities
+        run: |
+          DATE="${CAM_SCORE_DATE:-today}"
+          python -m cam.entrypoint score --date "$DATE"
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CAM_SCORE_DATE: ${{ github.event.inputs.score_date }}
+
+  # ---------------------------------------------------------------------------
+  # Step 3: Export + deploy to GitHub Pages
+  # ---------------------------------------------------------------------------
+  export:
+    name: Export static site
+    runs-on: ubuntu-latest
+    needs: score
+    if: >-
+      always() &&
+      needs.score.result != 'cancelled' &&
+      (needs.score.result == 'success' || needs.score.result == 'skipped') &&
+      (
+        github.event_name == 'schedule' ||
+        github.event.inputs.step == '' ||
+        github.event.inputs.step == 'export'
+      )
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Export static site + weekly digest
+        run: python -m cam.entrypoint export --output-dir ./site --digest
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Upload Pages artifact
+        if: >-
+          github.event_name == 'schedule' ||
+          github.event.inputs.deploy_pages == 'true' ||
+          github.event.inputs.deploy_pages == ''
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+      - name: Deploy to GitHub Pages
+        if: >-
+          github.event_name == 'schedule' ||
+          github.event.inputs.deploy_pages == 'true' ||
+          github.event.inputs.deploy_pages == ''
+        id: deploy
+        uses: actions/deploy-pages@v4
