@@ -114,6 +114,13 @@ Patterns confirmed across M2–M4 that must be followed in all ingestion modules
 
 Copy `.env.example` to `.env` for local dev. Required vars: `DATABASE_URL`, `EDGAR_USER_AGENT`. See `.env.example` for all options.
 
+## Documentation Conventions
+
+Two docs live in `docs/` and must be kept in sync with the code:
+
+- **`docs/architecture.md`** — Update when the system *design* changes: new modules, changed data flows, new DB patterns, algorithm details, design decisions. If you change how a component works internally, update the relevant architecture section.
+- **`docs/usage.md`** — Update when *how operators use the system* changes: new or changed function signatures, new parameters, new CLI commands, new Docker workflows, new output formats. Each public function exposed to operators should have a usage example.
+
 ## Common Commands
 
 ```bash

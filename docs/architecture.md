@@ -261,38 +261,69 @@ This ensures zero duplicate alerts per entity per threshold within any time peri
 
 ## 7. Output Layer (M14)
 
-*(Planned — not yet implemented)*
-
-M14 uses a **static site export** pattern. After the daily scoring run, a single export function reads the completed `alert_scores`, `entities`, and `signals` tables and writes a self-contained directory of JSON files. These files are uploaded to S3/CDN (or GitHub Pages) and require no live database at serve time.
+M14 uses a **static site export** pattern. After the daily scoring run, `export_static_site` reads the completed `alert_scores`, `entities`, and `signals` tables and writes a self-contained directory of files. The output can be uploaded to S3/CDN (or GitHub Pages) or opened directly from the filesystem — no live database is needed at serve time.
 
 ### Static Data Export
 
-`export_static_site(output_dir, *, db)` writes:
+`export_static_site(output_dir, *, db)` writes paired `.json` + `.js` companion files for every dataset:
 
 ```
 {output_dir}/
-├── meta.json                    # exported_at, entity_count, alert_count
-├── alerts.json                  # all alerts: critical → elevated → watch, date desc
-├── entities.json                # all entity summaries with current scores
-└── entities/
-    └── {entity_id}.json         # per-entity: score history + component breakdown + evidence
+├── meta.json          # exported_at, entity_count, alert_count, version
+├── meta.js            # window.CAM_META = {...};
+├── alerts.json        # all alerts sorted: critical → elevated → watch, date desc
+├── alerts.js          # window.CAM_ALERTS = [...];
+├── entities.json      # all entity summaries with current scores
+├── entities.js        # window.CAM_ENTITIES = [...];
+├── entities/
+│   ├── {id}.json      # per-entity: score history, component breakdown, top evidence
+│   └── {id}.js        # window.CAM_ENTITY = {...};
+├── index.html         # alert feed dashboard
+├── entity.html        # entity detail (uses ?id= URL param)
+└── industries.html    # entities grouped by 2-digit NAICS
 ```
 
-Export is idempotent — files are written atomically (temp file → rename) so partial exports are never visible.
+**Why two file formats?** Browsers block `fetch()` from `file://` URIs (same-origin policy), but `<script src="...">` is unrestricted. The `.js` companion files assign data to `window.CAM_*` globals so the HTML dashboards work whether opened from a CDN or double-clicked from a desktop folder.
+
+**Atomic writes:** Every file is written via a sibling `.tmp` file then renamed to the target, so readers never observe a partial file.
+
+**Stale file cleanup:** After writing the current entity set, any `entities/{id}.json` or `entities/{id}.js` files whose stem does not match a current entity ID are deleted. This ensures removed entities don't accumulate in the output directory.
+
+**Bounded DB queries:** History and evidence data are fetched using `ROW_NUMBER() OVER (PARTITION BY entity_id ORDER BY ...)` window functions. The database returns at most `_HISTORY_LIMIT = 90` history rows and `_EVIDENCE_LIMIT = 5` evidence rows per entity, regardless of table size.
 
 ### Static HTML Dashboard
 
-Minimal vanilla-JS pages that load exported JSON via `fetch()`. No build step, no framework. Renders correctly from `file://` URI or any CDN.
+Three minimal vanilla-JS pages, no build step, no framework:
 
-Priority pages:
+1. **index.html** — Alert feed sorted by severity (critical first), with inline filter
+2. **entity.html?id={uuid}** — Score timeline, component breakdown, top evidence signals
+3. **industries.html** — All entities grouped by 2-digit NAICS, sorted by average score
 
-1. **index.html** — Alert feed sorted by severity (critical first)
-2. **entity.html?id={uuid}** — Score timeline, component breakdown, evidence links
-3. **industries.html** — All entities grouped by 2-digit NAICS, sorted by score
+Each page uses a `loadScript(src)` helper that inserts a `<script>` tag and resolves a Promise on load, then reads data from the corresponding `window.CAM_*` global. This replaces `fetch()` and works from `file://` URIs without an HTTP server.
 
 ### Weekly Digest
 
-`export_digest(since_date, *, db)` returns a plaintext email body. The caller is responsible for SMTP delivery (configured via `cam/config.py`).
+`export_digest(since_date, *, db)` returns a plaintext email body summarising:
+
+- All critical and elevated alerts with `score_date >= since_date`, including up to two top evidence snippets (truncated to 120 characters) per entity
+- Top 5 sectors (2-digit NAICS) by average composite score, restricted to sectors with ≥ 3 entities
+
+The caller is responsible for SMTP delivery — this function only produces the body string.
+
+### Score Composition
+
+The composite score used for alert levels is a weighted sum of six signal components:
+
+| Component                | Weight | Source Module |
+|--------------------------|--------|---------------|
+| Cross-agency aggregate   | 35%    | M6            |
+| Risk language (10-K NLP) | 20%    | M7            |
+| Earnings call divergence | 15%    | M8            |
+| Proxy escalation signals | 15%    | M9            |
+| Merger vertical risk     | 10%    | M10           |
+| PE ownership flag        | 5%     | M12           |
+
+Missing components default to **0.0** — the scorer degrades gracefully if upstream modules have not yet produced signals for an entity.
 
 ---
 
