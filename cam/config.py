@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     weight_cfpb_spike: float = Field(default=0.20)
     weight_agency_overlap: float = Field(default=0.35)
 
+    # WARN Act ingestion (M11)
+    warn_http_timeout: int = Field(
+        default=60, description="HTTP timeout in seconds for WARN state fetches"
+    )
+
     # Alert thresholds
     alert_threshold_watch: float = Field(default=0.40)
     alert_threshold_elevated: float = Field(default=0.65)
