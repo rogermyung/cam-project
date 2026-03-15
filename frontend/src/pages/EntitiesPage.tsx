@@ -17,6 +17,21 @@ function levelOrder(level: AlertLevel) {
   return LEVEL_ORDER[level ?? ''] ?? 99
 }
 
+interface SortBtnProps {
+  value: SortKey
+  label: string
+  active: boolean
+  onSort: (v: SortKey) => void
+}
+
+function SortBtn({ value, label, active, onSort }: SortBtnProps) {
+  return (
+    <Button size="sm" variant={active ? 'default' : 'outline'} onClick={() => onSort(value)}>
+      {label}
+    </Button>
+  )
+}
+
 export function EntitiesPage() {
   const [entities, setEntities] = useState<EntitySummary[]>([])
   const [search, setSearch] = useState('')
@@ -47,16 +62,6 @@ export function EntitiesPage() {
       return a.canonical_name.localeCompare(b.canonical_name)
     })
 
-  const SortBtn = ({ value, label }: { value: SortKey; label: string }) => (
-    <Button
-      size="sm"
-      variant={sort === value ? 'default' : 'outline'}
-      onClick={() => setSort(value)}
-    >
-      {label}
-    </Button>
-  )
-
   return (
     <Layout>
       <div className="mb-6">
@@ -67,9 +72,9 @@ export function EntitiesPage() {
       {/* Controls */}
       <div className="flex flex-wrap gap-3 mb-6 items-center">
         <div className="flex gap-1">
-          <SortBtn value="score" label="By Risk" />
-          <SortBtn value="name" label="By Name" />
-          <SortBtn value="date" label="By Date" />
+          <SortBtn value="score" label="By Risk" active={sort === 'score'} onSort={setSort} />
+          <SortBtn value="name" label="By Name" active={sort === 'name'} onSort={setSort} />
+          <SortBtn value="date" label="By Date" active={sort === 'date'} onSort={setSort} />
         </div>
         <div className="flex-1 min-w-40 max-w-xs">
           <Input

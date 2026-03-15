@@ -931,7 +931,16 @@ class Alert:
 ## M14 — Output Layer
 
 ### Goal
-Export scored data as static JSON files and a minimal HTML dashboard, served from S3/CDN, GitHub Pages, or any static host. The audience is regulatory staff, congressional committee researchers, and investigative journalists. No live database connection is required at serve time — data is exported once per day after the scoring run completes.
+Export scored data as static JSON files consumed by a React + TypeScript dashboard hosted on
+GitHub Pages (or any static host). The audience is regulatory staff, congressional committee
+researchers, and investigative journalists. No live database connection is required at serve
+time — data is exported once per day after the scoring run completes.
+
+> **Architecture note (updated):** The original design specified vanilla-JS HTML pages that
+> worked from a `file://` URI. This was superseded by a React 19 + TypeScript + shadcn/ui
+> frontend (Vite build → `site/`, served via GitHub Pages). `file://` compatibility is **no
+> longer a requirement**. The Python exporter writes JSON only; the React app handles all
+> rendering.
 
 ### Components
 
@@ -939,7 +948,8 @@ Export scored data as static JSON files and a minimal HTML dashboard, served fro
 
 `export_static_site(output_dir: str | Path, *, db: Session) -> dict[str, int]`
 
-Reads from `alert_scores`, `entities`, and `signals` tables and writes a self-contained directory of JSON files:
+Reads from `alert_scores`, `entities`, and `signals` tables and writes a self-contained
+directory of JSON files consumed by the React dashboard at runtime:
 
 ```
 {output_dir}/
@@ -956,20 +966,27 @@ File schemas:
 |------|----------|
 | `meta.json` | `{exported_at, entity_count, alert_count, version}` |
 | `alerts.json` | Array of alert objects sorted critical → elevated → watch, then date desc |
-| `entities.json` | Array of `{id, canonical_name, composite_score, alert_level, score_date}` |
+| `entities.json` | Array of `{id, canonical_name, composite_score, alert_level, score_date, naics_code, ticker}` |
 | `entities/{id}.json` | Full record: score timeline, per-component breakdown, top evidence, naics_code |
 
-Re-running export is **idempotent** — files are written atomically (write to temp, then rename) so partial exports are never served.
+Re-running export is **idempotent** — files are written atomically (write to temp, then rename)
+so partial exports are never served.
 
-#### Static HTML Dashboard
+#### React Dashboard (`frontend/`)
 
-Minimal vanilla-JS HTML pages that load the exported JSON via `fetch()`. No build step, no bundler, no framework. Works from `file://` URI or any CDN (S3 + CloudFront, GitHub Pages).
+React 19 + TypeScript + shadcn/ui SPA built with Vite. Served via GitHub Pages under
+`/cam-project/` using HashRouter. Pages:
 
-Priority views:
+1. **AlertsPage** (`/`) — Alert feed with level-filter buttons, search, CSV export, pagination (50/page)
+2. **EntitiesPage** (`/entities`) — Sortable entity table
+3. **EntityPage** (`/entity/:id`) — SVG score-history sparkline, component breakdown, evidence table
+4. **IndustriesPage** (`/industries`) — NAICS accordion with sector filter and pagination
 
-1. **index.html** — Alert feed sorted by severity (critical first), links to entity detail
-2. **entity.html?id={uuid}** — Score timeline, component breakdown, source evidence with links
-3. **industries.html** — All entities grouped by 2-digit NAICS, sorted by composite score
+Layout includes a global entity search (keyboard shortcut `/`) with keyboard-navigable dropdown.
+
+Build outputs to `../site/` with `emptyOutDir: false`. The CI pipeline builds React **first**,
+then runs the Python export so production JSON always overwrites sample fixtures copied from
+`frontend/public/data/`.
 
 #### Weekly Digest
 
@@ -1002,7 +1019,8 @@ def export_digest(
 ```
 
 ### Test Requirements
-- `export_static_site` writes all required files to a `tmp_path`; each file is valid JSON
+- `export_static_site` writes all required JSON files to a `tmp_path`; each file is valid JSON
+- No `.js` or `.html` files are written by the exporter (React app handles rendering)
 - `entities/{id}.json` is self-contained (all required fields present without further DB queries)
 - `alerts.json` is sorted correctly: critical before elevated before watch, then date descending
 - `meta.json` contains correct `entity_count` and `alert_count`
@@ -1011,9 +1029,9 @@ def export_digest(
 - Performance: export completes in < 60 seconds for 10,000 entities (benchmark test)
 
 ### Acceptance Criteria
-- [ ] `export_static_site` writes all four file types with valid JSON in < 60 s for 10 K entities
+- [ ] `export_static_site` writes all four JSON file types with valid content in < 60 s for 10 K entities
 - [ ] `entities/{id}.json` is fully self-contained (no live DB query at serve time)
-- [ ] Static HTML pages load and render correctly from `file://` URI (no server required)
+- [ ] React dashboard builds cleanly (`npm run build`) with zero type errors and zero lint errors
 - [ ] Weekly digest email sends successfully via SMTP and contains evidence for each entity listed
 - [ ] Re-running export is idempotent (same data → same files; no partial writes visible)
 

@@ -15,6 +15,8 @@ const FILTER_OPTIONS: { value: Filter; label: string }[] = [
   { value: 'watch', label: 'Watch' },
 ]
 
+const PAGE_SIZE = 50
+
 function exportCsv(alerts: Alert[]) {
   const header = 'entity_id,canonical_name,alert_level,composite_score,score_date,naics_code'
   const rows = alerts.map((a) =>
@@ -42,6 +44,7 @@ export function AlertsPage() {
   const [meta, setMeta] = useState<Meta | null>(null)
   const [filter, setFilter] = useState<Filter>('all')
   const [search, setSearch] = useState('')
+  const [page, setPage] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -58,6 +61,19 @@ export function AlertsPage() {
   const filtered = alerts
     .filter((a) => filter === 'all' || a.alert_level === filter)
     .filter((a) => !search || a.canonical_name.toLowerCase().includes(search.toLowerCase()))
+
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE)
+  const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+
+  function handleFilterChange(val: Filter) {
+    setFilter(val)
+    setPage(0)
+  }
+
+  function handleSearchChange(val: string) {
+    setSearch(val)
+    setPage(0)
+  }
 
   return (
     <Layout>
@@ -86,7 +102,7 @@ export function AlertsPage() {
               key={value}
               size="sm"
               variant={filter === value ? 'default' : 'outline'}
-              onClick={() => setFilter(value)}
+              onClick={() => handleFilterChange(value)}
             >
               {label}
               {value !== 'all' && (
@@ -103,7 +119,7 @@ export function AlertsPage() {
           <Input
             placeholder="Search entities…"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => handleSearchChange(e.target.value)}
             className="h-8 text-sm"
           />
         </div>
@@ -121,10 +137,37 @@ export function AlertsPage() {
         <p className="text-gray-400 italic">No alerts match the current filter.</p>
       )}
       <div className="space-y-3">
-        {filtered.map((alert) => (
+        {paged.map((alert) => (
           <AlertCard key={alert.entity_id} alert={alert} />
         ))}
       </div>
+
+      {/* Pagination */}
+      {!loading && !error && totalPages > 1 && (
+        <div className="flex items-center justify-between mt-6">
+          <span className="text-xs text-gray-500">
+            Page {page + 1} of {totalPages} ({filtered.length} alerts)
+          </span>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={page === 0}
+              onClick={() => setPage((p) => p - 1)}
+            >
+              Prev
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={page >= totalPages - 1}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
     </Layout>
   )
 }

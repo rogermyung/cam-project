@@ -174,14 +174,6 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Export JSON data files
-        # Writes meta.json, alerts.json, entities.json, entities/{id}.json
-        # into site/data/ — React app fetches these at runtime.
-        run: python -m cam.entrypoint export --output-dir ./site/data --digest
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
-
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -189,11 +181,22 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Build React dashboard
-        # Vite writes to ../site/ with emptyOutDir:false so site/data/ is preserved.
+        # Vite writes to ../site/ with emptyOutDir:false.
+        # Export runs AFTER this step so production JSON always overwrites
+        # any sample fixtures that Vite copied from frontend/public/data/.
         run: |
           cd frontend
           npm ci
           npm run build
+
+      - name: Export JSON data files
+        # Writes meta.json, alerts.json, entities.json, entities/{id}.json
+        # into site/data/. Runs after the Vite build so production data is
+        # never shadowed by the sample fixtures in frontend/public/data/.
+        run: python -m cam.entrypoint export --output-dir ./site/data --digest
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
 
       - name: Upload Pages artifact
         if: >-

@@ -23,6 +23,7 @@ export function AlertBadge({ level, className }: AlertBadgeProps) {
   )
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function levelColor(level: AlertLevel): string {
   switch (level) {
     case 'critical': return '#dc2626' // red-600
@@ -32,6 +33,7 @@ export function levelColor(level: AlertLevel): string {
   }
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function levelBorderClass(level: AlertLevel): string {
   switch (level) {
     case 'critical': return 'border-l-red-600 bg-red-50'

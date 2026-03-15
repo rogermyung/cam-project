@@ -41,5 +41,4 @@ jobs:
         run: npm run build
 
       - name: Lint
-        # Only fail on errors (not warnings) in CI
-        run: npx eslint src --max-warnings 0 || true
+        run: npx eslint src --max-warnings 0

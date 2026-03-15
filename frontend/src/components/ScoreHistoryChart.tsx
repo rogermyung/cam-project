@@ -1,70 +1,91 @@
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ReferenceLine,
-  ResponsiveContainer,
-} from 'recharts'
 import type { ScoreHistory } from '@/types'
 
 interface ScoreHistoryChartProps {
   history: ScoreHistory[]
 }
 
-function formatDate(dateStr: string): string {
-  const d = new Date(dateStr)
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+// Alert level thresholds (0–100 display scale)
+const THRESHOLDS = [
+  { y: 80, label: 'Critical', color: '#dc2626' },
+  { y: 65, label: 'Elevated', color: '#f97316' },
+  { y: 40, label: 'Watch',    color: '#eab308' },
+]
+
+function levelColor(score: number): string {
+  if (score >= 80) return '#dc2626'
+  if (score >= 65) return '#f97316'
+  if (score >= 40) return '#eab308'
+  return '#6366f1'
+}
+
+function shortDate(dateStr: string): string {
+  return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
 export function ScoreHistoryChart({ history }: ScoreHistoryChartProps) {
-  if (!history || history.length === 0) {
-    return <p className="text-sm text-gray-400 italic">No score history available.</p>
+  if (!history || history.length < 2) {
+    return <p className="text-sm text-gray-400 italic">Not enough score history to display chart.</p>
   }
 
-  const data = [...history]
+  const sorted = [...history]
     .sort((a, b) => a.score_date.localeCompare(b.score_date))
-    .map((h) => ({
-      date: formatDate(h.score_date),
-      score: Math.round(h.composite_score * 100),
-    }))
+    .map((h) => ({ date: h.score_date, score: Math.round(h.composite_score * 100) }))
+
+  const W = 500
+  const H = 120
+  const PAD = { top: 12, right: 44, bottom: 20, left: 32 }
+  const cW = W - PAD.left - PAD.right
+  const cH = H - PAD.top - PAD.bottom
+
+  const xPos = (i: number) => PAD.left + (i / (sorted.length - 1)) * cW
+  const yPos = (v: number) => PAD.top + cH - (v / 100) * cH
+
+  const polyline = sorted.map((d, i) => `${xPos(i)},${yPos(d.score)}`).join(' ')
+
+  const labelIdx =
+    sorted.length > 3 ? [0, Math.floor(sorted.length / 2), sorted.length - 1] : [0, sorted.length - 1]
 
   return (
-    <ResponsiveContainer width="100%" height={220}>
-      <LineChart data={data} margin={{ top: 8, right: 12, left: -20, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
-        <XAxis
-          dataKey="date"
-          tick={{ fontSize: 11, fill: '#9ca3af' }}
-          tickLine={false}
-          axisLine={false}
-        />
-        <YAxis
-          domain={[0, 100]}
-          tick={{ fontSize: 11, fill: '#9ca3af' }}
-          tickLine={false}
-          axisLine={false}
-          tickFormatter={(v) => `${v}%`}
-        />
-        <Tooltip
-          formatter={(value) => [`${value ?? 0}%`, 'Score']}
-          contentStyle={{ fontSize: 12, borderRadius: 6, border: '1px solid #e5e7eb' }}
-        />
-        {/* Threshold reference lines */}
-        <ReferenceLine y={40} stroke="#eab308" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Watch', position: 'insideTopRight', fontSize: 10, fill: '#eab308' }} />
-        <ReferenceLine y={65} stroke="#f97316" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Elevated', position: 'insideTopRight', fontSize: 10, fill: '#f97316' }} />
-        <ReferenceLine y={80} stroke="#dc2626" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Critical', position: 'insideTopRight', fontSize: 10, fill: '#dc2626' }} />
-        <Line
-          type="monotone"
-          dataKey="score"
-          stroke="#6366f1"
-          strokeWidth={2}
-          dot={{ r: 3, fill: '#6366f1' }}
-          activeDot={{ r: 5 }}
-        />
-      </LineChart>
-    </ResponsiveContainer>
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}
+      role="img" aria-label="Score history sparkline">
+
+      {/* Y-axis ticks */}
+      {[0, 50, 100].map((t) => (
+        <text key={t} x={PAD.left - 4} y={yPos(t) + 3} fontSize={9} fill="#9ca3af" textAnchor="end">
+          {t}%
+        </text>
+      ))}
+
+      {/* Threshold reference lines */}
+      {THRESHOLDS.map((t) => (
+        <g key={t.label}>
+          <line x1={PAD.left} y1={yPos(t.y)} x2={W - PAD.right} y2={yPos(t.y)}
+            stroke={t.color} strokeWidth={1} strokeDasharray="4 2" opacity={0.65} />
+          <text x={W - PAD.right + 3} y={yPos(t.y) + 3} fontSize={8} fill={t.color} opacity={0.85}>
+            {t.label}
+          </text>
+        </g>
+      ))}
+
+      {/* Sparkline */}
+      <polyline points={polyline} fill="none" stroke="#6366f1"
+        strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+
+      {/* Data points colored by alert level */}
+      {sorted.map((d, i) => (
+        <circle key={i} cx={xPos(i)} cy={yPos(d.score)} r={3.5}
+          fill={levelColor(d.score)} stroke="#fff" strokeWidth={1}>
+          <title>{shortDate(d.date)}: {d.score}%</title>
+        </circle>
+      ))}
+
+      {/* X-axis date labels */}
+      {labelIdx.map((i) => (
+        <text key={i} x={xPos(i)} y={H - 4} fontSize={9} fill="#9ca3af"
+          textAnchor={i === 0 ? 'start' : i === sorted.length - 1 ? 'end' : 'middle'}>
+          {shortDate(sorted[i].date)}
+        </text>
+      ))}
+    </svg>
   )
 }
