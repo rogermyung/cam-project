@@ -75,10 +75,10 @@ tests/
 | M7 — 10-K Risk Language NLP | #8 | ✅ Complete | #24 |
 | M8 — Earnings Call NLP | #9 | ✅ Complete | #25 |
 | M9 — Proxy Statement Parser | #10 | ✅ Complete | #26 |
-| M10 — HSR Merger Screener | #11 | 🔄 In Progress | — |
-| M11 — WARN Act Ingestion | #12 | ⬜ TODO | — |
-| M12 — PE/Bankruptcy Correlator | #13 | ⬜ TODO | — |
-| M13 — Alert Scoring Engine | #14 | ⬜ TODO | — |
+| M10 — HSR Merger Screener | #11 | ✅ Complete | #27 |
+| M11 — WARN Act Ingestion | #12 | ✅ Complete | #28 |
+| M12 — PE/Bankruptcy Correlator | #13 | ✅ Complete | #29 |
+| M13 — Alert Scoring Engine | #14 | 🔄 In Progress | — |
 | M14 — Output Layer | #15 | ⬜ TODO | — |
 
 ## Skills (Slash Commands)
@@ -94,8 +94,11 @@ Three project-specific skills live in `.claude/commands/`:
 Patterns confirmed across M2–M4 that must be followed in all ingestion modules:
 
 - **Transaction ownership**: call `bulk_resolve(..., commit=False)`; the ingestion function issues the single `db.commit()` at the end. This keeps the whole ingest atomic and lets the caller control visibility — `bulk_resolve(commit=True)` does a single post-batch commit which is fine for interactive use but wrong for bulk ingestion where the caller must own the boundary.
+- **Analysis helper flush rule**: Helpers in `cam/analysis/` (and `cam/alerts/`) use `db.flush()` — not `db.commit()`. The public-facing function or the caller owns the single `db.commit()` at the end, same convention as ingestion.
 - **Facility name cleaning**: strip `" - LOCATION"` suffix (`r"\s+-\s+[A-Z0-9 ]+$"`) before passing names to `bulk_resolve`. Both OSHA and EPA facilities use this pattern.
 - **Date guard**: `_parse_date()` returns `None` for unparseable values. Since-date filters must use `d is not None and d >= since_date` — never `d is None or d >= since_date` (the latter silently admits unparseable rows).
+- **SQLAlchemy NULL date filter**: In ORM WHERE clauses always add `Model.col.isnot(None)` *before* `Model.col >= since` — SQLite will silently match NULL rows against date comparisons otherwise.
+- **Safe single-row lookup**: When no DB-level `UNIQUE` constraint exists, use `.limit(1)` + `scalars().first()` instead of `scalar_one_or_none()` to avoid `MultipleResultsFound` exceptions.
 
 ## Testing Conventions
 
@@ -103,6 +106,8 @@ Patterns confirmed across M2–M4 that must be followed in all ingestion modules
 - **Fixture files** go in `tests/fixtures/<source>/` (e.g. `tests/fixtures/osha/violations_sample.csv`)
 - **SQLite** for unit tests (no DB required); use `@requires_db` for Postgres-only tests
 - **Performance tests** required per module — see PLAN.md acceptance criteria for limits
+- **scipy** (required for M12+): install with `uv pip install "scipy>=1.13,<2.0"` if missing from venv
+- **M13 scorer/alert logic requires 100% coverage** — no exceptions
 - Run all tests: `PYTHONPATH=. .venv/bin/python -m pytest --no-cov`
 
 ## Environment
@@ -133,4 +138,11 @@ docker-compose up
 
 # Entity review queue CLI
 PYTHONPATH=. .venv/bin/python -m cam.entity.cli list
+
+# Resolve CLAUDE.md rebase conflict markers (Edit tool can't read files with conflict markers)
+python3 -c "
+c = open('CLAUDE.md').read()
+# replace conflict block with your desired version manually, then run:
+open('CLAUDE.md', 'w').write(c)
+"
 ```
