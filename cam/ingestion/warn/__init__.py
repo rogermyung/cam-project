@@ -18,7 +18,9 @@ PE ownership is stored as a Signal record with signal_type="pe_owned"; the
 
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -88,7 +90,12 @@ def _is_retriable(exc: BaseException) -> bool:
 
 
 def _fetch(url: str, *, client: httpx.Client | None = None) -> bytes:
-    """GET *url* with retry; returns raw response bytes."""
+    """GET *url* with retry; returns raw response bytes.
+
+    The HTTP timeout is loaded from ``cam.config`` Settings (``warn_http_timeout``,
+    default 60 s) when making live requests.  Injected clients (used in tests)
+    are called with a fixed 60 s timeout since the mock ignores the value.
+    """
 
     @retry(
         retry=retry_if_exception(_is_retriable),
@@ -100,7 +107,10 @@ def _fetch(url: str, *, client: httpx.Client | None = None) -> bytes:
         if client is not None:
             resp = client.get(url, timeout=60)
         else:
-            resp = httpx.get(url, timeout=60)
+            from cam.config import get_settings
+
+            timeout = get_settings().warn_http_timeout
+            resp = httpx.get(url, timeout=timeout)
         resp.raise_for_status()
         return resp.content
 
@@ -305,9 +315,24 @@ def _parse_pdf(content: bytes, cfg: StateConfig) -> list[WarnRecord]:
 # ---------------------------------------------------------------------------
 
 
-def _idempotency_key(state_code: str, company: str, notice_date: date | None) -> str:
-    """Build a stable dedup key for a WARN record."""
-    date_str = notice_date.isoformat() if notice_date else "unknown"
+def _idempotency_key(
+    state_code: str,
+    company: str,
+    notice_date: date | None,
+    raw: dict[str, Any] | None = None,
+) -> str:
+    """Build a stable dedup key for a WARN record.
+
+    When *notice_date* is None (unparseable or absent), a SHA-256 hash of the
+    raw source fields is used instead of the constant ``"unknown"`` so that two
+    distinct notices for the same (state, company) without a parseable date are
+    not collapsed into the same key and silently dropped on subsequent runs.
+    """
+    if notice_date is not None:
+        date_str = notice_date.isoformat()
+    else:
+        raw_bytes = json.dumps(raw or {}, sort_keys=True, default=str).encode()
+        date_str = "no-date:" + hashlib.sha256(raw_bytes).hexdigest()[:16]
     return f"{state_code}::{company.lower().strip()}::{date_str}"
 
 
@@ -343,7 +368,7 @@ def _records_to_events(
     # Idempotency filter
     to_process: list[WarnRecord] = []
     for rec in records:
-        key = _idempotency_key(rec.state_code, rec.company, rec.notice_date)
+        key = _idempotency_key(rec.state_code, rec.company, rec.notice_date, rec.raw)
         if key in existing_keys:
             result.skipped += 1
         else:
@@ -359,7 +384,7 @@ def _records_to_events(
     resolved = bulk_resolve(resolve_records, "warn", db=db, commit=False)
 
     for rec, res in zip(to_process, resolved):
-        key = _idempotency_key(rec.state_code, rec.company, rec.notice_date)
+        key = _idempotency_key(rec.state_code, rec.company, rec.notice_date, rec.raw)
         try:
             entity_id = res.entity_id
             raw_json: dict[str, Any] = {
@@ -389,7 +414,7 @@ def _records_to_events(
             result.errors += 1
             result.error_details.append(f"{rec.company}: {exc}")
 
-    db.commit()
+    # Caller (ingest_state / ingest_all_states) owns the commit boundary.
     return result
 
 
@@ -453,7 +478,7 @@ def ingest_state(
         result.error_details.append(f"Parse failed for {state_code}: {exc}")
         return result
 
-    # Persist
+    # Persist — single commit at end per CLAUDE.md transaction-ownership rule
     existing = _existing_keys(db, state_code.upper())
     sub = _records_to_events(records, since_date, existing, db)
 
@@ -462,6 +487,7 @@ def ingest_state(
     result.skipped = sub.skipped
     result.errors += sub.errors
     result.error_details.extend(sub.error_details)
+    db.commit()
     return result
 
 
@@ -547,6 +573,8 @@ def ingest_all_states(
         result.error_details.extend(sub.error_details)
         results.append(result)
 
+    # Single commit for the entire batch — honours the single-commit-at-end rule.
+    db.commit()
     return results
 
 

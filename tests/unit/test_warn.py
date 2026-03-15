@@ -571,3 +571,129 @@ def test_parse_html_performance():
     _parse_html(content, STATE_CONFIGS["TX"])
     elapsed = (time.perf_counter() - start) * 1000
     assert elapsed < 200, f"_parse_html took {elapsed:.1f} ms"
+
+
+# ---------------------------------------------------------------------------
+# Regression: qodo fix #1 — HTTP timeout via cam.config
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_uses_client_when_provided():
+    """When a mock client is injected, _fetch must use it (not httpx.get)."""
+    from cam.ingestion.warn import _fetch
+
+    client = _make_client(b"test-content")
+    result = _fetch("https://example.com/warn.csv", client=client)
+    assert result == b"test-content"
+    client.get.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Regression: qodo fix #2 — single commit at end of ingest batch
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_state_commits_once(db):
+    """ingest_state must issue exactly one db.commit() regardless of record count."""
+    content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
+    client = _make_client(content)
+
+    commit_calls = []
+    original_commit = db.commit
+
+    def _tracking_commit():
+        commit_calls.append(1)
+        original_commit()
+
+    db.commit = _tracking_commit
+    ingest_state("CA", db=db, client=client)
+    assert len(commit_calls) == 1, f"Expected 1 commit, got {len(commit_calls)}"
+
+
+def test_ingest_all_states_commits_once(db):
+    """ingest_all_states must issue exactly one db.commit() for the full batch."""
+    ca_content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
+
+    def _fake_fetch(url: str, *, client=None):
+        if "edd.ca.gov" in url:
+            return ca_content
+        return b""
+
+    commit_calls = []
+    original_commit = db.commit
+
+    def _tracking_commit():
+        commit_calls.append(1)
+        original_commit()
+
+    db.commit = _tracking_commit
+
+    with patch("cam.ingestion.warn._fetch", side_effect=_fake_fetch):
+        ingest_all_states(db=db)
+
+    assert len(commit_calls) == 1, f"Expected 1 commit, got {len(commit_calls)}"
+
+
+# ---------------------------------------------------------------------------
+# Regression: qodo fix #3 — None-date idempotency key disambiguation
+# ---------------------------------------------------------------------------
+
+
+def test_idempotency_key_none_date_stable_same_raw():
+    """Same raw dict with None date must produce the same key (idempotent)."""
+    raw = {"Company": "Acme Corp", "Employees": "100", "City": "Detroit"}
+    k1 = _idempotency_key("MI", "Acme Corp", None, raw)
+    k2 = _idempotency_key("MI", "Acme Corp", None, raw)
+    assert k1 == k2
+
+
+def test_idempotency_key_none_date_differs_for_different_raw():
+    """Two distinct records with None date and different raw fields must get different keys."""
+    raw1 = {"Company": "Acme Corp", "Employees": "100", "City": "Detroit"}
+    raw2 = {"Company": "Acme Corp", "Employees": "250", "City": "Flint"}
+    k1 = _idempotency_key("MI", "Acme Corp", None, raw1)
+    k2 = _idempotency_key("MI", "Acme Corp", None, raw2)
+    assert k1 != k2, "Different no-date records must not share the same dedup key"
+
+
+def test_idempotency_key_none_date_differs_from_dated_key():
+    """A None-date key must not collide with a real-date key for the same company."""
+    dated = _idempotency_key("CA", "TechCorp", date(2023, 1, 1))
+    no_date = _idempotency_key("CA", "TechCorp", None, {})
+    assert dated != no_date
+
+
+def test_ingest_state_two_no_date_records_both_ingested(db):
+    """Two records with None notice_date but different raw content must both be ingested."""
+    import csv
+    import io as _io
+
+    # Build a CSV with two rows that will fail date parsing but differ in employee count
+    rows = [
+        {
+            "Company": "Ambiguous Corp",
+            "Notice Date": "BAD-DATE",
+            "No. Of Employees Affected": "100",
+            "City": "Sacramento",
+            "County": "Sacramento",
+            "Event Type": "Layoff",
+        },
+        {
+            "Company": "Ambiguous Corp",
+            "Notice Date": "BAD-DATE",
+            "No. Of Employees Affected": "200",
+            "City": "Sacramento",
+            "County": "Sacramento",
+            "Event Type": "Closure",
+        },
+    ]
+    buf = _io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+    writer.writeheader()
+    writer.writerows(rows)
+    content = buf.getvalue().encode()
+
+    client = _make_client(content)
+    result = ingest_state("CA", db=db, client=client)
+    # Both records should be ingested (not collapsed to one by shared "unknown" key)
+    assert result.ingested == 2, f"Expected 2 ingested, got {result.ingested}"
