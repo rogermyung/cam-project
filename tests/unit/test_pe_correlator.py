@@ -345,11 +345,16 @@ def test_p_value_small_sample_returns_none(db):
 
 
 def test_p_value_present_when_sample_sufficient(db):
-    """≥ MIN_PE_SAMPLE PE entities → p_value is a float."""
+    """Strictly > MIN_PE_SAMPLE PE entities → p_value is a float.
+
+    PLAN.md: '> 10 PE entities' (strict greater-than).  MIN_PE_SAMPLE + 1 (11)
+    entities are used here to satisfy the strict threshold.
+    """
     today = date.today()
     recent = today - timedelta(days=60)
 
-    pe_entities = [_make_entity(db, f"PE Corp {i}", "72") for i in range(MIN_PE_SAMPLE)]
+    # Use MIN_PE_SAMPLE + 1 to satisfy the strict "> MIN_PE_SAMPLE" requirement
+    pe_entities = [_make_entity(db, f"PE Corp {i}", "72") for i in range(MIN_PE_SAMPLE + 1)]
     [_make_entity(db, f"Public Corp {i}", "72") for i in range(20)]
 
     for e in pe_entities:
@@ -362,6 +367,26 @@ def test_p_value_present_when_sample_sufficient(db):
     assert result.p_value is not None
     assert isinstance(result.p_value, float)
     assert 0.0 <= result.p_value <= 1.0
+
+
+def test_p_value_none_at_exact_min_pe_sample(db):
+    """Exactly MIN_PE_SAMPLE PE entities → p_value must be None (strict > threshold)."""
+    today = date.today()
+    recent = today - timedelta(days=60)
+
+    pe_entities = [_make_entity(db, f"PE Corp {i}", "73") for i in range(MIN_PE_SAMPLE)]
+    [_make_entity(db, f"Public Corp {i}", "73") for i in range(20)]
+
+    for e in pe_entities:
+        _flag_pe(db, e)
+        _make_warn_event(db, e, recent)
+
+    db.flush()
+    result = compute_pe_warn_rate("73", db=db)
+    assert result.p_value is None, (
+        f"Expected p_value=None at exactly MIN_PE_SAMPLE={MIN_PE_SAMPLE} entities, "
+        f"got {result.p_value}"
+    )
 
 
 def test_compute_p_value_direct_known_values():
@@ -511,17 +536,25 @@ def test_summarize_all_industries_empty_db(db):
 
 
 def test_summarize_all_industries_excludes_small_pe(db):
-    """Sectors with < min_pe_entities PE companies must be excluded."""
-    # 5 PE entities in NAICS 72 — below default MIN_PE_SAMPLE (10)
+    """Sectors with ≤ min_pe_entities PE companies must be excluded (strict > threshold)."""
+    # 5 PE entities in NAICS 72 — well below min_pe_entities=10
     _make_sector(db, "72", pe_count=5, non_pe_count=20)
     db.flush()
     result = summarize_all_industries(db=db, min_pe_entities=10)
-    assert all(row["pe_count"] >= 10 for row in result)
+    assert all(row["pe_count"] > 10 for row in result)
+
+
+def test_summarize_all_industries_excludes_exact_threshold(db):
+    """Sector with exactly min_pe_entities PE companies must be excluded (strict >)."""
+    _make_sector(db, "54", pe_count=10, non_pe_count=20)  # exactly 10 — below strict >
+    db.flush()
+    result = summarize_all_industries(db=db, min_pe_entities=10)
+    assert not any(row["industry"] == "54" for row in result)
 
 
 def test_summarize_all_industries_includes_large_pe(db):
-    """Sectors with ≥ min_pe_entities PE companies must be included."""
-    _make_sector(db, "62", pe_count=12, non_pe_count=20)
+    """Sectors with > min_pe_entities PE companies must be included."""
+    _make_sector(db, "62", pe_count=12, non_pe_count=20)  # 12 > 10 ✓
     db.flush()
     result = summarize_all_industries(db=db, min_pe_entities=10)
     assert any(row["industry"] == "62" for row in result)
@@ -556,6 +589,12 @@ def test_summarize_all_industries_bankruptcy_mode(db):
     sector = next((r for r in result if r["industry"] == "52"), None)
     assert sector is not None
     assert sector["pe_events"] == 12  # 12 bankruptcy events, not 24
+
+
+def test_summarize_all_industries_invalid_event_type(db):
+    """Passing an unrecognised event_type must raise ValueError immediately."""
+    with pytest.raises(ValueError, match="event_type must be"):
+        summarize_all_industries(event_type="osha", db=db)
 
 
 def test_summarize_all_industries_row_keys(db):

@@ -74,7 +74,7 @@ class PEComparison:
     rate_ratio: float  # pe_rate / non_pe_rate; float('inf') if non_pe_rate == 0
     sample_sizes: dict[str, int] = field(default_factory=dict)
     # {"pe_count": N, "non_pe_count": M, "pe_events": X, "non_pe_events": Y}
-    p_value: float | None = None  # Fisher's exact (one-sided); None if N < MIN_PE_SAMPLE
+    p_value: float | None = None  # Fisher's exact (one-sided); None if N <= MIN_PE_SAMPLE
     lookback_years: int = 5
 
 
@@ -126,6 +126,7 @@ def _entity_ids_with_events(
             Event.entity_id.in_(entity_ids),
             Event.source == source,
             Event.event_type == event_type,
+            Event.event_date.isnot(None),
             Event.event_date >= since,
         )
         .distinct()
@@ -150,6 +151,7 @@ def _count_events(
         Event.entity_id.in_(entity_ids),
         Event.source == source,
         Event.event_type == event_type,
+        Event.event_date.isnot(None),
         Event.event_date >= since,
     )
     return db.execute(stmt).scalar_one() or 0
@@ -212,9 +214,9 @@ def _compute_comparison(
     pe_rate = pe_event_count / (pe_count * lookback_years) if pe_count > 0 else 0.0
     non_pe_rate = non_pe_event_count / (non_pe_count * lookback_years) if non_pe_count > 0 else 0.0
 
-    # p-value only when sample is large enough
+    # p-value only when sample is large enough (PLAN.md: "> 10 PE entities")
     p_value: float | None = None
-    if pe_count >= MIN_PE_SAMPLE:
+    if pe_count > MIN_PE_SAMPLE:
         pe_ids_with = _entity_ids_with_events(db, sector_pe_ids, event_source, event_type, since)
         non_pe_ids_with = _entity_ids_with_events(
             db, sector_non_pe_ids, event_source, event_type, since
@@ -310,12 +312,14 @@ def flag_pe_entity_for_monitoring(
     db:        SQLAlchemy session (caller must commit).
     evidence:  Optional free-text evidence string stored in the signal.
     """
-    existing = db.execute(
-        select(Signal).where(
+    existing = db.scalars(
+        select(Signal)
+        .where(
             Signal.entity_id == entity_id,
             Signal.signal_type == "pe_owned",
         )
-    ).scalar_one_or_none()
+        .limit(1)
+    ).first()
 
     if existing is not None:
         logger.debug("Entity %s already flagged as PE-owned; skipping.", entity_id)
@@ -329,7 +333,7 @@ def flag_pe_entity_for_monitoring(
         evidence=evidence or "Flagged for enhanced PE monitoring",
     )
     db.add(sig)
-    db.commit()
+    db.flush()  # caller owns the commit boundary
 
 
 def summarize_all_industries(
@@ -358,6 +362,9 @@ def summarize_all_industries(
     ``rate_ratio`` descending.  Each row contains all :class:`PEComparison`
     fields flattened alongside the ``industry_label`` field.
     """
+    if event_type not in ("warn", "bankruptcy"):
+        raise ValueError(f"event_type must be 'warn' or 'bankruptcy', got {event_type!r}")
+
     # Collect all distinct 2-digit NAICS prefixes in the entities table
     stmt = select(Entity.naics_code).where(Entity.naics_code.isnot(None)).distinct()
     codes = db.execute(stmt).scalars().all()
@@ -368,7 +375,7 @@ def summarize_all_industries(
 
     for prefix in sorted(prefixes):
         result = compute_fn(prefix, lookback_years, db=db)
-        if result.sample_sizes.get("pe_count", 0) < min_pe_entities:
+        if result.sample_sizes.get("pe_count", 0) <= min_pe_entities:
             continue
         rows.append(
             {
