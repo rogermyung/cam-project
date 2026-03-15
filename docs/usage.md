@@ -7,14 +7,16 @@ This guide explains how to run the CAM pipeline, score entities, and interpret a
 ## Table of Contents
 
 1. [Quick Start](#1-quick-start)
-2. [Ingesting Regulatory Data](#2-ingesting-regulatory-data)
-3. [Flagging PE-Owned Entities](#3-flagging-pe-owned-entities)
-4. [Running Daily Alert Scoring](#4-running-daily-alert-scoring)
+2. [Pipeline CLI Reference](#2-pipeline-cli-reference)
+3. [Running with Docker](#3-running-with-docker)
+4. [Scheduled Automation (GitHub Actions)](#4-scheduled-automation-github-actions)
 5. [Interpreting Alert Levels](#5-interpreting-alert-levels)
-6. [Generating Alerts for a Single Entity](#6-generating-alerts-for-a-single-entity)
+6. [Flagging PE-Owned Entities](#6-flagging-pe-owned-entities)
 7. [Industry Benchmarking (PE vs. Non-PE)](#7-industry-benchmarking-pe-vs-non-pe)
-8. [Environment Setup](#8-environment-setup)
-9. [Running Tests](#9-running-tests)
+8. [Generating Alerts for a Single Entity](#8-generating-alerts-for-a-single-entity)
+9. [Environment Setup](#9-environment-setup)
+10. [Database Requirements](#10-database-requirements)
+11. [Running Tests](#11-running-tests)
 
 ---
 
@@ -27,143 +29,201 @@ docker-compose up -d
 # Apply database migrations
 DATABASE_URL=postgresql://cam:cam@localhost:5432/cam alembic upgrade head
 
-# Ingest all WARN Act notices (all 50 states)
-PYTHONPATH=. python -c "
-from cam.db.session import get_session
-from cam.ingestion.warn import ingest_all_states
-with get_session() as db:
-    summary = ingest_all_states(db=db)
-    print(f'Ingested: {summary}')
-"
+# Ingest all regulatory sources (last 30 days by default)
+DATABASE_URL=postgresql://cam:cam@localhost:5432/cam \
+  EDGAR_USER_AGENT=you@example.com \
+  python -m cam.entrypoint ingest --source all
 
-# Run daily scoring
-PYTHONPATH=. python -c "
-from datetime import date
-from cam.db.session import get_session
-from cam.alerts.scorer import run_daily_scoring
-with get_session() as db:
-    scores = run_daily_scoring(score_date=date.today(), db=db)
-    print(f'Scored {len(scores)} entities')
-"
+# Score all entities for today
+DATABASE_URL=postgresql://cam:cam@localhost:5432/cam \
+  EDGAR_USER_AGENT=you@example.com \
+  python -m cam.entrypoint score --date today
+
+# Export the static dashboard + weekly digest
+DATABASE_URL=postgresql://cam:cam@localhost:5432/cam \
+  EDGAR_USER_AGENT=you@example.com \
+  python -m cam.entrypoint export --output-dir ./site --digest
+
+# Open the dashboard (no server needed)
+open ./site/index.html
+```
+
+All three commands exit `0` on success and non-zero on failure, making them safe to chain in CI or cron.
+
+---
+
+## 2. Pipeline CLI Reference
+
+The `cam.entrypoint` module provides three independently-runnable subcommands:
+
+### `ingest` — Fetch regulatory data
+
+```bash
+python -m cam.entrypoint ingest [--source SOURCE...] [--since YYYY-MM-DD]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--source` | `all` | One or more of: `osha epa cfpb warn edgar all` |
+| `--since` | 30 days ago | Only ingest records on or after this date |
+
+Each source is attempted independently — a failure in one source does not stop the others. Exit code is `1` if any source failed (so the scheduler notices), but successfully-ingested data is committed and available for scoring.
+
+```bash
+# Ingest everything from a specific date
+python -m cam.entrypoint ingest --source all --since 2025-01-01
+
+# Ingest a single source
+python -m cam.entrypoint ingest --source cfpb --since 2025-06-01
+
+# Ingest multiple specific sources
+python -m cam.entrypoint ingest --source osha epa --since 2025-03-01
+```
+
+### `score` — Compute composite risk scores
+
+```bash
+python -m cam.entrypoint score [--date YYYY-MM-DD]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--date` | today | Score date (reads signals written by `ingest`) |
+
+Scores all entities that have at least one signal. Writes to `alert_scores` and fires alerts for entities that cross a threshold for the first time.
+
+```bash
+# Score for today
+python -m cam.entrypoint score --date today
+
+# Score for a specific past date (backfill)
+python -m cam.entrypoint score --date 2025-06-15
+```
+
+### `export` — Generate the static dashboard
+
+```bash
+python -m cam.entrypoint export --output-dir PATH [--digest] [--digest-since YYYY-MM-DD]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output-dir` | *(required)* | Destination directory (created if absent) |
+| `--digest` | off | Also write `digest.txt` (plaintext weekly email body) |
+| `--digest-since` | 7 days ago | Digest covers alerts on or after this date |
+
+```bash
+# Export dashboard only
+python -m cam.entrypoint export --output-dir ./site
+
+# Export dashboard + weekly digest
+python -m cam.entrypoint export --output-dir ./site --digest
+
+# Digest covering the last 30 days
+python -m cam.entrypoint export --output-dir ./site --digest --digest-since 2025-06-01
+```
+
+The output directory is a self-contained static site. Open `index.html` directly in a browser (`file://` URIs are fully supported) or host on GitHub Pages, S3, or Nginx.
+
+---
+
+## 3. Running with Docker
+
+### Pull the pre-built image from GHCR
+
+```bash
+docker pull ghcr.io/rogermyung/cam-project:latest
+```
+
+### Run each step
+
+```bash
+# Ingest all sources
+docker run --rm \
+  -e DATABASE_URL=postgresql://... \
+  -e EDGAR_USER_AGENT=you@example.com \
+  ghcr.io/rogermyung/cam-project:latest \
+  ingest --source all --since 2025-01-01
+
+# Score entities
+docker run --rm \
+  -e DATABASE_URL=postgresql://... \
+  -e EDGAR_USER_AGENT=you@example.com \
+  ghcr.io/rogermyung/cam-project:latest \
+  score --date today
+
+# Export dashboard (mount a local dir to retrieve output)
+docker run --rm \
+  -e DATABASE_URL=postgresql://... \
+  -e EDGAR_USER_AGENT=you@example.com \
+  -v "$(pwd)/site:/out" \
+  ghcr.io/rogermyung/cam-project:latest \
+  export --output-dir /out --digest
+```
+
+### Local dev with docker-compose
+
+```bash
+# Start all infrastructure
+docker-compose up -d
+
+# Build and run the pipeline image locally
+docker-compose build cam
+docker-compose run --rm cam ingest --source warn
+docker-compose run --rm cam score --date today
+docker-compose run --rm cam export --output-dir /out --digest
+```
+
+### Celery worker (background task queue)
+
+Override the entrypoint to start the Celery worker instead:
+
+```bash
+docker run --rm \
+  -e DATABASE_URL=postgresql://... \
+  -e EDGAR_USER_AGENT=you@example.com \
+  -e REDIS_URL=redis://... \
+  --entrypoint celery \
+  ghcr.io/rogermyung/cam-project:latest \
+  -A cam.tasks:celery_app worker --loglevel=info
 ```
 
 ---
 
-## 2. Ingesting Regulatory Data
+## 4. Scheduled Automation (GitHub Actions)
 
-Each ingestion module reads from a government data source and writes to the `events` table. All functions are **idempotent** — running them twice produces the same database state.
+The `.github/workflows/pipeline.yml` workflow runs the full pipeline daily at 06:00 UTC and deploys the static dashboard to GitHub Pages.
 
-### WARN Act Notices (Layoffs)
+### Prerequisites
 
-```python
-from cam.db.session import get_session
-from cam.ingestion.warn import ingest_state, ingest_all_states
+1. Set these repository secrets (Settings → Secrets and variables → Actions):
+   - `DATABASE_URL` — publicly reachable PostgreSQL (Supabase, Neon, Railway)
+   - `EDGAR_USER_AGENT` — your contact email (SEC EDGAR requirement)
 
-with get_session() as db:
-    # Ingest one state
-    result = ingest_state("CA", db=db)
-    print(f"CA: {result}")
+2. Enable GitHub Pages (Settings → Pages → Source: "GitHub Actions")
 
-    # Ingest all states (~5 min)
-    summary = ingest_all_states(db=db)
+### Manual runs
+
+Trigger `workflow_dispatch` from the Actions tab with optional overrides:
+
+| Input | Description |
+|-------|-------------|
+| `since` | Ingest since date (`YYYY-MM-DD`). Default: 30 days ago |
+| `step` | Run only one step (`ingest`, `score`, or `export`). Default: all |
+| `score_date` | Score date. Default: `today` |
+| `deploy_pages` | Deploy export output to GitHub Pages. Default: `true` |
+
+### Recommended schedule
+
+The pipeline is designed to run as three separate jobs:
+
+```
+06:00 UTC   ingest  (all regulatory sources)
+↓           score   (reads signals written by ingest)
+↓           export  (reads alert_scores, deploys to GitHub Pages)
 ```
 
-### OSHA Violations
-
-```python
-from cam.db.session import get_session
-from cam.ingestion.osha import ingest_osha_violations
-
-with get_session() as db:
-    count = ingest_osha_violations(since_date="2020-01-01", db=db)
-    print(f"Ingested {count} OSHA violation records")
-```
-
-### EPA Enforcement Actions
-
-```python
-from cam.db.session import get_session
-from cam.ingestion.epa import ingest_epa_violations
-
-with get_session() as db:
-    count = ingest_epa_violations(since_date="2020-01-01", db=db)
-```
-
-### CFPB Consumer Complaints
-
-```python
-from cam.db.session import get_session
-from cam.ingestion.cfpb import ingest_cfpb_complaints
-
-with get_session() as db:
-    count = ingest_cfpb_complaints(since_date="2020-01-01", db=db)
-```
-
-### SEC EDGAR Filings (10-K, Proxy)
-
-```python
-from cam.db.session import get_session
-from cam.ingestion.edgar import ingest_company_filings
-
-with get_session() as db:
-    ingest_company_filings(cik="0000070858", db=db)  # CVS Health
-```
-
----
-
-## 3. Flagging PE-Owned Entities
-
-CAM tracks private equity ownership through the `Signal` table. Use `flag_pe_entity_for_monitoring` to mark an entity as PE-owned:
-
-```python
-from uuid import UUID
-from cam.db.session import get_session
-from cam.analysis.pe_correlator import flag_pe_entity_for_monitoring
-
-entity_id = UUID("your-entity-uuid-here")
-
-with get_session() as db:
-    flag_pe_entity_for_monitoring(
-        entity_id,
-        db=db,
-        evidence="Listed in PE Stakeholder Project database, confirmed 2024-Q1",
-    )
-    db.commit()
-```
-
-The call is **idempotent** — if the entity is already flagged, no duplicate signal is created.
-
-Once flagged, the entity's `pe_warn_flag` component (5% weight) activates in the next daily scoring run.
-
----
-
-## 4. Running Daily Alert Scoring
-
-The `run_daily_scoring` function scores **all entities** that have at least one `Signal` record. It writes composite scores to the `alert_scores` table and commits once at the end.
-
-```python
-from datetime import date
-from cam.db.session import get_session
-from cam.alerts.scorer import run_daily_scoring, generate_alert, get_prior_score
-
-with get_session() as db:
-    today = date.today()
-    scores = run_daily_scoring(score_date=today, db=db)
-
-    print(f"Scored {len(scores)} entities")
-
-    # Generate alerts for entities that crossed a threshold
-    for score in scores:
-        prior = get_prior_score(score.entity_id, before_date=today, db=db)
-        alert = generate_alert(score.entity_id, score, prior, db=db)
-        if alert:
-            print(f"ALERT [{alert.alert_level.upper()}] {alert.canonical_name}")
-            print(f"  Score: {alert.score:.3f}  (was: {alert.prior_score})")
-            print(f"  Action: {alert.suggested_action}")
-            print(f"  Agencies: {', '.join(alert.relevant_regulatory_body)}")
-```
-
-This is also exposed as a **Celery task** — see `cam/tasks.py`.
+Each step is a separate GHA job so they can fail and be re-run independently.
 
 ---
 
@@ -195,28 +255,29 @@ Missing components default to **0.0** — the scorer degrades gracefully if a mo
 
 ---
 
-## 6. Generating Alerts for a Single Entity
+## 6. Flagging PE-Owned Entities
+
+CAM tracks private equity ownership through the `Signal` table. Use `flag_pe_entity_for_monitoring` to mark an entity as PE-owned:
 
 ```python
-from datetime import date
 from uuid import UUID
 from cam.db.session import get_session
-from cam.alerts.scorer import compute_entity_score, generate_alert, get_prior_score
+from cam.analysis.pe_correlator import flag_pe_entity_for_monitoring
 
 entity_id = UUID("your-entity-uuid-here")
-today = date.today()
 
 with get_session() as db:
-    score = compute_entity_score(entity_id, today, db=db)
-    prior = get_prior_score(entity_id, before_date=today, db=db)
-    alert = generate_alert(entity_id, score, prior, db=db)
+    flag_pe_entity_for_monitoring(
+        entity_id,
+        db=db,
+        evidence="Listed in PE Stakeholder Project database, confirmed 2024-Q1",
+    )
     db.commit()
-
-    if alert:
-        print(alert)
-    else:
-        print(f"No threshold crossed. Current level: {score.alert_level}")
 ```
+
+The call is **idempotent** — if the entity is already flagged, no duplicate signal is created.
+
+Once flagged, the entity's `pe_warn_flag` component (5% weight) activates in the next daily scoring run.
 
 ---
 
@@ -247,7 +308,32 @@ Only sectors with **more than 10 PE-owned entities** are included, per the stati
 
 ---
 
-## 8. Environment Setup
+## 8. Generating Alerts for a Single Entity
+
+```python
+from datetime import date
+from uuid import UUID
+from cam.db.session import get_session
+from cam.alerts.scorer import compute_entity_score, generate_alert, get_prior_score
+
+entity_id = UUID("your-entity-uuid-here")
+today = date.today()
+
+with get_session() as db:
+    score = compute_entity_score(entity_id, today, db=db)
+    prior = get_prior_score(entity_id, before_date=today, db=db)
+    alert = generate_alert(entity_id, score, prior, db=db)
+    db.commit()
+
+    if alert:
+        print(alert)
+    else:
+        print(f"No threshold crossed. Current level: {score.alert_level}")
+```
+
+---
+
+## 9. Environment Setup
 
 Copy `.env.example` to `.env` and fill in the required values:
 
@@ -255,17 +341,72 @@ Copy `.env.example` to `.env` and fill in the required values:
 cp .env.example .env
 ```
 
-| Variable          | Required | Description                                         |
-|-------------------|----------|-----------------------------------------------------|
-| `DATABASE_URL`    | ✅       | PostgreSQL connection string                        |
-| `EDGAR_USER_AGENT`| ✅       | Your email address (SEC EDGAR requires it)          |
-| `REDIS_URL`       | ✗        | Default: `redis://localhost:6379/0`                 |
-| `S3_BUCKET`       | ✗        | Default: `cam-documents`                            |
-| `API_AUTH_TOKEN`  | ✗        | Required only for the REST API layer (M14)          |
+| Variable                    | Required | Default                        | Description                                         |
+|-----------------------------|----------|--------------------------------|-----------------------------------------------------|
+| `DATABASE_URL`              | ✅       | —                              | PostgreSQL connection string                        |
+| `EDGAR_USER_AGENT`          | ✅       | —                              | Your email address (SEC EDGAR requires it)          |
+| `INGEST_DEFAULT_SINCE_DAYS` | ✗        | `30`                           | Default look-back window when `--since` is omitted  |
+| `REDIS_URL`                 | ✗        | `redis://localhost:6379/0`     | Celery broker                                       |
+| `S3_BUCKET`                 | ✗        | `cam-documents`                | Raw document storage bucket                         |
+| `API_AUTH_TOKEN`            | ✗        | —                              | Required only for the REST API layer (M14)          |
+| `ALERT_THRESHOLD_WATCH`     | ✗        | `0.40`                         | Minimum score for `watch` alert level               |
+| `ALERT_THRESHOLD_ELEVATED`  | ✗        | `0.65`                         | Minimum score for `elevated` alert level            |
+| `ALERT_THRESHOLD_CRITICAL`  | ✗        | `0.80`                         | Minimum score for `critical` alert level            |
+
+All variables can be set in `.env` or as real environment variables. Environment variables take precedence over `.env`.
 
 ---
 
-## 9. Running Tests
+## 10. Database Requirements
+
+CAM uses PostgreSQL for all structured data. Redis is required only for the Celery task queue.
+
+### Minimum Specifications
+
+| Entity Count | vCPUs | RAM   | Storage | Notes |
+|-------------|-------|-------|---------|-------|
+| ≤ 500       | 1     | 512 MB | 2 GB   | Free tier sufficient for most cloud providers |
+| ≤ 5,000     | 1     | 1 GB  | 10 GB   | Suitable for statewide or sector analysis |
+| ≤ 50,000    | 2     | 4 GB  | 50 GB   | Full national corpus (all PE-owned employers) |
+| > 50,000    | 4+    | 8 GB+ | 100 GB+ | High-frequency re-scoring or multi-year history |
+
+Storage is dominated by the `events` and `signals` tables. Each year of full OSHA + EPA + CFPB data generates roughly 2–5 GB of rows. EDGAR full-text storage (S3) is additional and is bounded by your S3 quota.
+
+### PostgreSQL Version
+
+**PostgreSQL 15 or later** is required. CAM uses:
+- `JSONB` columns with GIN indexes (for signal metadata)
+- `ROW_NUMBER() OVER (PARTITION BY ...)` window functions (for bounded score history)
+- `INSERT ... ON CONFLICT DO NOTHING` (for idempotent ingestion)
+
+PostgreSQL 14 is untested; versions prior to 12 are incompatible.
+
+### Cloud Options for GitHub Actions
+
+GitHub Actions runners cannot reach `localhost`, so the database must be publicly accessible. Recommended free/low-cost options:
+
+| Provider | Free Tier | Connection Limit | Notes |
+|----------|-----------|-----------------|-------|
+| [Supabase](https://supabase.com) | 500 MB, 1 vCPU | 60 direct connections | Best free option; enable connection pooler for GHA |
+| [Neon](https://neon.tech) | 0.5 GB, auto-suspend | 100 connections | Scales to zero; fast cold start (~1 s) |
+| [Railway](https://railway.app) | $5/month | unlimited | Simplest setup; no cold starts |
+| [Render](https://render.com) | 1 GB (90-day trial) | 25 connections | Good for staging environments |
+
+For production with > 5,000 entities, use a dedicated instance (RDS, Cloud SQL) with at least 2 vCPUs and a connection pooler (PgBouncer or the provider's built-in pooler).
+
+### Connection Pool Settings
+
+CAM uses SQLAlchemy's default pool settings. For GHA or serverless environments, add to your `DATABASE_URL`:
+
+```
+postgresql://user:pass@host/db?sslmode=require&connect_timeout=10
+```
+
+For high-concurrency deployments, set `pool_size` and `max_overflow` in `cam/db/session.py` or use a dedicated connection pooler upstream.
+
+---
+
+## 11. Running Tests
 
 ```bash
 # All unit tests (no DB needed)

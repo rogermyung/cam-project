@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     weight_cfpb_spike: float = Field(default=0.20)
     weight_agency_overlap: float = Field(default=0.35)
 
+    # Ingestion defaults
+    ingest_default_since_days: int = Field(
+        default=30,
+        description="Default look-back window in days for ingestion when --since is not specified",
+    )
+
     # WARN Act ingestion (M11)
     warn_http_timeout: int = Field(
         default=60, description="HTTP timeout in seconds for WARN state fetches"
