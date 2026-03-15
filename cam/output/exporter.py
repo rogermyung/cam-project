@@ -2,11 +2,10 @@
 M14 — Output Layer: Static site export and weekly digest.
 
 ``export_static_site`` reads the ``alert_scores``, ``entities``, and
-``signals`` tables and writes a self-contained directory of JSON files plus
-companion ``.js`` data files and minimal HTML dashboard pages.  The output
-can be served from any static host (S3, GitHub Pages, Netlify) or opened
-directly from the filesystem via ``file://`` URIs — no live database or HTTP
-server is required at serve time.
+``signals`` tables and writes a directory of JSON data files consumed by
+the React dashboard built from ``frontend/``.  The output is served from
+GitHub Pages (or any static host); the React app fetches the JSON at
+runtime via ``fetch()``.
 
 ``export_digest`` produces a plaintext weekly email body summarising new
 critical/elevated alerts and top sectors by average composite score.  The
@@ -16,21 +15,10 @@ Directory layout written by export_static_site::
 
     {output_dir}/
     ├── meta.json          # exported_at, entity_count, alert_count, version
-    ├── meta.js            # window.CAM_META = {...};  (same data, loadable via <script src>)
     ├── alerts.json        # all alerts sorted: critical → elevated → watch, date desc
-    ├── alerts.js          # window.CAM_ALERTS = [...];
     ├── entities.json      # all entity summaries with current scores
-    ├── entities.js        # window.CAM_ENTITIES = [...];
-    ├── entities/
-    │   ├── {id}.json      # per-entity: score history, component breakdown, evidence
-    │   └── {id}.js        # window.CAM_ENTITY = {...};  (same data, loadable via <script src>)
-    ├── index.html         # alert feed dashboard
-    ├── entity.html        # entity detail page  (uses ?id= URL param)
-    └── industries.html    # entities grouped by 2-digit NAICS
-
-JSON files are provided for programmatic consumers; ``.js`` companion files
-allow the HTML dashboard to work without a web server (``file://`` URIs block
-``fetch()`` but not ``<script src>``).
+    └── entities/
+        └── {id}.json      # per-entity: score history, component breakdown, evidence
 
 All files are written atomically (temp file → rename) so a partial export is
 never visible to readers.  Re-running the export is idempotent; entity files
@@ -54,7 +42,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from cam.db.models import AlertScore, Entity, Signal
-from cam.output._templates import HTML_PAGES
 
 logger = logging.getLogger(__name__)
 
@@ -93,26 +80,6 @@ def _write_atomic(path: Path, data: Any) -> None:
     tmp = path.with_suffix(".tmp")
     try:
         tmp.write_text(json.dumps(data, default=str, indent=2), encoding="utf-8")
-        tmp.replace(path)
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
-
-
-def _write_js_var(path: Path, var_name: str, data: Any) -> None:
-    """Write *data* as a JS global variable assignment to *path* atomically.
-
-    Produces ``window.{var_name} = <JSON>;`` so the file can be loaded via a
-    ``<script src="...">`` tag from any origin, including ``file://`` URIs
-    where ``fetch()`` is blocked by the browser's same-origin policy.
-
-    The parent directory is created if absent.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    try:
-        js = f"window.{var_name} = {json.dumps(data, default=str, indent=2)};"
-        tmp.write_text(js, encoding="utf-8")
         tmp.replace(path)
     except Exception:
         tmp.unlink(missing_ok=True)
@@ -241,16 +208,12 @@ def export_static_site(
     *,
     db: Session,
 ) -> dict[str, int]:
-    """Export all scored data to a self-contained directory of static files.
+    """Export all scored data to a directory of static JSON data files.
 
     Reads from the ``entities``, ``alert_scores``, and ``signals`` tables and
-    writes JSON data files, companion ``.js`` data files (for ``file://`` URI
-    support), and HTML dashboard pages.  All data files are written
-    atomically; HTML pages are written in-place (they are identical across
-    runs).
-
-    After writing current entity files any stale ``entities/{id}.json`` or
-    ``entities/{id}.js`` files from previously-exported entities that are no
+    writes JSON data files consumed by the React dashboard at runtime.  All
+    files are written atomically; after writing current entity files, stale
+    ``entities/{id}.json`` files from previously-exported entities that are no
     longer in the database are removed.
 
     No ``db.commit()`` is called — this function is read-only with respect to
@@ -260,12 +223,16 @@ def export_static_site(
     ----------
     output_dir:
         Destination directory path.  Created (including parents) if absent.
+        In the GitHub Actions pipeline this should be ``site/data/`` so that
+        the React build and the JSON data coexist under ``site/``.
     db:
         SQLAlchemy session — used for reads only.
 
     Returns
     -------
     Summary dict with keys ``entities``, ``alerts``, ``files_written``.
+    ``files_written`` equals ``3 + N`` where N is the number of entities
+    (meta.json + alerts.json + entities.json + one file per entity).
     """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -283,7 +250,7 @@ def export_static_site(
     history_map = _fetch_score_history(db)
     evidence_map = _fetch_top_evidence(db)
 
-    # ---- Sort alert scores: critical → elevated → watch → None, then date desc ----
+    # ---- Sort alert scores: critical -> elevated -> watch -> None, then date desc ----
     sorted_scores = sorted(
         current_scores,
         key=lambda s: (
@@ -333,22 +300,19 @@ def export_static_site(
         "version": _VERSION,
     }
 
-    # ---- Write top-level JSON + JS files ----
+    # ---- Write top-level JSON files ----
     files_written = 0
 
     _write_atomic(out / "meta.json", meta_data)
-    _write_js_var(out / "meta.js", "CAM_META", meta_data)
-    files_written += 2
+    files_written += 1
 
     _write_atomic(out / "alerts.json", alerts_data)
-    _write_js_var(out / "alerts.js", "CAM_ALERTS", alerts_data)
-    files_written += 2
+    files_written += 1
 
     _write_atomic(out / "entities.json", entities_data)
-    _write_js_var(out / "entities.js", "CAM_ENTITIES", entities_data)
-    files_written += 2
+    files_written += 1
 
-    # ---- Write per-entity JSON + JS files ----
+    # ---- Write per-entity JSON files ----
     current_ids: set[str] = {str(e.id) for e in all_entities}
 
     for e in all_entities:
@@ -372,20 +336,14 @@ def export_static_site(
             "top_evidence": evidence_map.get(str(e.id), []),
         }
         _write_atomic(out / "entities" / f"{e.id}.json", detail)
-        _write_js_var(out / "entities" / f"{e.id}.js", "CAM_ENTITY", detail)
-        files_written += 2
+        files_written += 1
 
     # ---- Remove stale entity files (entities no longer in the database) ----
     entities_dir = out / "entities"
     for stale in list(entities_dir.iterdir()):
-        if stale.suffix in {".json", ".js"} and stale.stem not in current_ids:
+        if stale.suffix == ".json" and stale.stem not in current_ids:
             stale.unlink(missing_ok=True)
             logger.debug("Removed stale entity file: %s", stale)
-
-    # ---- Write HTML dashboard pages ----
-    for filename, content in HTML_PAGES.items():
-        (out / filename).write_text(content, encoding="utf-8")
-        files_written += 1
 
     logger.info(
         "Export complete: %d entities, %d alerts, %d files written.",
@@ -413,7 +371,7 @@ def export_digest(
       including up to two top evidence snippets per entity
     - Top 5 sectors (2-digit NAICS) ranked by average current composite score
 
-    The caller is responsible for SMTP delivery — this function only produces
+    The caller is responsible for SMTP delivery -- this function only produces
     the email body string.
 
     Parameters
@@ -422,7 +380,7 @@ def export_digest(
         Only alerts whose most-recent ``score_date`` falls on or after this
         date are included in the "new alerts" section.
     db:
-        SQLAlchemy session — used for reads only.
+        SQLAlchemy session -- used for reads only.
 
     Returns
     -------

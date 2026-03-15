@@ -316,7 +316,16 @@ def _fetch_echo_cases(
         "p_date_since": since_date.strftime("%m/%d/%Y"),
         "output": "JSON",
     }
-    resp = _get(_ECHO_CASE_URL, params=params, client=client)
+    try:
+        resp = _get(_ECHO_CASE_URL, params=params, client=client)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            logger.warning(
+                "ECHO API returned 404 for %s — endpoint may be unavailable, returning empty",
+                _ECHO_CASE_URL,
+            )
+            return []
+        raise
     data = resp.json()
     if isinstance(data, list):
         return data

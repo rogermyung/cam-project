@@ -99,11 +99,19 @@ def _ingest_source(source: str, since: date, args: argparse.Namespace) -> None:
     from cam.db.session import get_session
 
     if source == "osha":
+        import httpx
+
         from cam.ingestion.osha import download_bulk_data, ingest_from_csv
 
         total_ingested = 0
         for year in range(since.year, date.today().year + 1):
-            csv_path = download_bulk_data(year)
+            try:
+                csv_path = download_bulk_data(year)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    logger.warning("OSHA bulk CSV for %d not yet published (404), skipping", year)
+                    continue
+                raise
             with get_session() as db:
                 result = ingest_from_csv(csv_path, since_date=since, db=db)
             total_ingested += result.ingested
