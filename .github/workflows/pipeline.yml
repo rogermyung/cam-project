@@ -85,11 +85,11 @@ jobs:
         # Exit code 1 if any source failed, but others still run.
         # Score/export will still run on whatever was successfully ingested.
         run: |
-          ARGS="--source all"
           if [ -n "$CAM_SINCE" ]; then
-            ARGS="$ARGS --since $CAM_SINCE"
+            python -m cam.entrypoint ingest --source all --since "$CAM_SINCE"
+          else
+            python -m cam.entrypoint ingest --source all
           fi
-          python -m cam.entrypoint $ARGS
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
@@ -130,6 +130,7 @@ jobs:
           python -m cam.entrypoint score --date "$DATE"
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
           CAM_SCORE_DATE: ${{ github.event.inputs.score_date }}
 
   # ---------------------------------------------------------------------------
@@ -172,6 +173,7 @@ jobs:
         run: python -m cam.entrypoint export --output-dir ./site --digest
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
 
       - name: Upload Pages artifact
         if: >-

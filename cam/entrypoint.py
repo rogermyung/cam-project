@@ -40,8 +40,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("cam.entrypoint")
 
-# Default look-back for ingestion when --since is not specified
-_DEFAULT_SINCE_DAYS = 30
+_ALL_SOURCES = ["osha", "epa", "cfpb", "warn", "edgar"]
 
 
 # ---------------------------------------------------------------------------
@@ -66,10 +65,14 @@ def _parse_date_arg(value: str) -> date:
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
     """Run one or more ingestion modules and return an exit code."""
+    from cam.config import get_settings
 
-    since: date = args.since or (date.today() - timedelta(days=_DEFAULT_SINCE_DAYS))
-    sources: list[str] = (
-        args.source if args.source != ["all"] else ["osha", "epa", "cfpb", "warn", "edgar"]
+    cfg = get_settings()
+    since: date = args.since or (date.today() - timedelta(days=cfg.ingest_default_since_days))
+    # Expand "all" and deduplicate, preserving any explicitly named sources.
+    raw: list[str] = args.source
+    sources: list[str] = list(
+        dict.fromkeys(s for token in raw for s in (_ALL_SOURCES if token == "all" else [token]))
     )
 
     logger.info("Ingest starting — sources=%s since=%s", sources, since)
@@ -96,11 +99,15 @@ def _ingest_source(source: str, since: date, args: argparse.Namespace) -> None:
     from cam.db.session import get_session
 
     if source == "osha":
-        from cam.ingestion.osha import ingest_from_csv
+        from cam.ingestion.osha import download_bulk_data, ingest_from_csv
 
-        with get_session() as db:
-            count = ingest_from_csv(since_date=since, db=db)
-        logger.info("osha: %s records ingested", count)
+        total_ingested = 0
+        for year in range(since.year, date.today().year + 1):
+            csv_path = download_bulk_data(year)
+            with get_session() as db:
+                result = ingest_from_csv(csv_path, since_date=since, db=db)
+            total_ingested += result.ingested
+        logger.info("osha: %s records ingested", total_ingested)
 
     elif source == "epa":
         from cam.ingestion.epa import ingest_echo_violations
@@ -248,13 +255,13 @@ Examples:
     p_ingest.add_argument(
         "--source",
         nargs="+",
-        choices=["osha", "epa", "cfpb", "warn", "edgar", "all"],
+        choices=[*_ALL_SOURCES, "all"],
         default=["all"],
         metavar="SOURCE",
         help=(
             "Data source(s) to ingest. "
-            "Choices: osha epa cfpb warn edgar all. "
-            "Default: all (osha + epa + cfpb + warn + edgar)"
+            f"Choices: {' '.join(_ALL_SOURCES)} all. "
+            f"Default: all ({' + '.join(_ALL_SOURCES)})"
         ),
     )
     p_ingest.add_argument(
@@ -262,7 +269,7 @@ Examples:
         type=_parse_date_arg,
         default=None,
         metavar="YYYY-MM-DD",
-        help=f"Ingest records on or after this date (default: {_DEFAULT_SINCE_DAYS} days ago)",
+        help="Ingest records on or after this date (default: configured ingest_default_since_days ago)",
     )
 
     # ---- score ----
