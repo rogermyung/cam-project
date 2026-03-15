@@ -4,6 +4,9 @@ Unit tests for M14 — Output Layer.
 Covers:
 - export_static_site: writes all required files (meta, alerts, entities, per-entity, HTML)
 - All JSON files are valid and parseable
+- Companion .js files are written alongside each .json file
+- .js files contain correct window.CAM_* global assignments
+- HTML pages use loadScript() instead of fetch() for file:// compatibility
 - meta.json has correct entity_count and alert_count
 - alerts.json sorted correctly: critical → elevated → watch, then date descending
 - alerts.json excludes entities with no alert level (score < watch threshold)
@@ -14,11 +17,13 @@ Covers:
 - entities without any alert score get null current_score
 - return value structure: {entities, alerts, files_written}
 - HTML dashboard pages written (index.html, entity.html, industries.html)
+- Stale entity files are removed on re-export
 - Idempotency: second export overwrites cleanly, same counts
 - export_digest: includes elevated/critical alerts on or after since_date
 - export_digest: excludes alerts before since_date
 - export_digest: excludes watch/below-watch entities
 - export_digest: returns non-empty string with correct header
+- export_digest: includes signal evidence snippets per alert entity
 - export_digest: sector summary appears when enough entities per NAICS
 - Performance: 500 entities export in < 10 s (validates scale headroom)
 """
@@ -121,10 +126,17 @@ def test_export_writes_required_files(db, tmp_path):
 
     export_static_site(tmp_path, db=db)
 
+    # JSON data files
     assert (tmp_path / "meta.json").exists()
     assert (tmp_path / "alerts.json").exists()
     assert (tmp_path / "entities.json").exists()
     assert (tmp_path / "entities" / f"{entity.id}.json").exists()
+    # Companion JS files
+    assert (tmp_path / "meta.js").exists()
+    assert (tmp_path / "alerts.js").exists()
+    assert (tmp_path / "entities.js").exists()
+    assert (tmp_path / "entities" / f"{entity.id}.js").exists()
+    # HTML pages
     assert (tmp_path / "index.html").exists()
     assert (tmp_path / "entity.html").exists()
     assert (tmp_path / "industries.html").exists()
@@ -148,6 +160,48 @@ def test_all_json_files_are_valid(db, tmp_path):
         assert data is not None
 
 
+def test_js_files_have_window_assignment(db, tmp_path):
+    """Each .js companion file starts with a window.CAM_* assignment."""
+    entity = _make_entity(db)
+    _make_score(db, entity, 0.85, "critical")
+    db.commit()
+
+    export_static_site(tmp_path, db=db)
+
+    expected = {
+        tmp_path / "meta.js": "window.CAM_META",
+        tmp_path / "alerts.js": "window.CAM_ALERTS",
+        tmp_path / "entities.js": "window.CAM_ENTITIES",
+        tmp_path / "entities" / f"{entity.id}.js": "window.CAM_ENTITY",
+    }
+    for js_path, expected_prefix in expected.items():
+        content = js_path.read_text()
+        assert content.startswith(expected_prefix), (
+            f"{js_path.name} should start with '{expected_prefix}'"
+        )
+
+
+def test_js_files_contain_valid_json_payload(db, tmp_path):
+    """The JSON payload embedded in each .js file is valid JSON."""
+    entity = _make_entity(db)
+    _make_score(db, entity, 0.85, "critical")
+    db.commit()
+
+    export_static_site(tmp_path, db=db)
+
+    for js_path in [
+        tmp_path / "meta.js",
+        tmp_path / "alerts.js",
+        tmp_path / "entities.js",
+        tmp_path / "entities" / f"{entity.id}.js",
+    ]:
+        content = js_path.read_text()
+        # Strip "window.CAM_XXX = " prefix and trailing ";"
+        payload = content[content.index("=") + 1 :].rstrip(";").strip()
+        data = json.loads(payload)
+        assert data is not None
+
+
 def test_html_files_are_non_empty(db, tmp_path):
     """HTML dashboard pages must be written and non-empty."""
     db.commit()
@@ -157,6 +211,21 @@ def test_html_files_are_non_empty(db, tmp_path):
         content = (tmp_path / page).read_text()
         assert len(content) > 100  # not trivially empty
         assert "<!DOCTYPE html>" in content
+
+
+def test_html_uses_load_script_not_fetch(db, tmp_path):
+    """HTML pages use loadScript() for data loading, not fetch(), for file:// support."""
+    db.commit()
+    export_static_site(tmp_path, db=db)
+
+    for page in ["index.html", "entity.html", "industries.html"]:
+        content = (tmp_path / page).read_text()
+        assert "loadScript(" in content, f"{page} should use loadScript()"
+        # Ensure there are no bare fetch() calls for data loading
+        # (fetch may appear in the loadScript polyfill comment but not as a data loader)
+        assert "fetch('alerts.json')" not in content
+        assert "fetch('entities.json')" not in content
+        assert "fetch('entities/" not in content
 
 
 # ---------------------------------------------------------------------------
@@ -462,7 +531,7 @@ def test_return_value_structure(db, tmp_path):
 
 
 def test_return_value_files_written_count(db, tmp_path):
-    """files_written = 3 JSON + N entity files + 3 HTML pages."""
+    """files_written = 3 JSON + 3 JS + N entity JSON + N entity JS + 3 HTML pages."""
     e1 = _make_entity(db, "A")
     _make_entity(db, "B")
     _make_score(db, e1, 0.85, "critical")
@@ -470,8 +539,39 @@ def test_return_value_files_written_count(db, tmp_path):
 
     result = export_static_site(tmp_path, db=db)
 
-    # 3 top-level JSON + 2 entity JSON + 3 HTML = 8
-    assert result["files_written"] == 8
+    # 3 top-level JSON + 3 top-level JS + 2 entity JSON + 2 entity JS + 3 HTML = 13
+    assert result["files_written"] == 13
+
+
+# ---------------------------------------------------------------------------
+# Stale file cleanup
+# ---------------------------------------------------------------------------
+
+
+def test_stale_entity_files_removed(db, tmp_path):
+    """Entity files injected from a previous run are deleted on re-export."""
+    entity = _make_entity(db, "Stays")
+    _make_score(db, entity, 0.85, "critical")
+    db.commit()
+
+    # First export — creates the expected entity files
+    export_static_site(tmp_path, db=db)
+
+    # Inject stale files simulating a previously-exported entity no longer in DB
+    stale_id = uuid.uuid4()
+    stale_json = tmp_path / "entities" / f"{stale_id}.json"
+    stale_js = tmp_path / "entities" / f"{stale_id}.js"
+    stale_json.write_text("{}", encoding="utf-8")
+    stale_js.write_text("window.CAM_ENTITY = {};", encoding="utf-8")
+
+    # Second export — must remove stale files
+    export_static_site(tmp_path, db=db)
+
+    assert not stale_json.exists(), "Stale .json file should have been removed"
+    assert not stale_js.exists(), "Stale .js file should have been removed"
+    # Current entity's files must still exist
+    assert (tmp_path / "entities" / f"{entity.id}.json").exists()
+    assert (tmp_path / "entities" / f"{entity.id}.js").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +608,7 @@ def test_export_idempotent_same_meta(db, tmp_path):
 
 
 def test_export_no_extra_entity_files(db, tmp_path):
-    """Second run does not leave stale entity files from removed entities."""
+    """Second run does not leave extra entity files when data is unchanged."""
     e1 = _make_entity(db, "Stays")
     _make_score(db, e1, 0.85, "critical")
     db.commit()
@@ -591,6 +691,39 @@ def test_digest_includes_alerts_on_since_date(db):
     result = export_digest(since_date, db=db)
 
     assert "On Boundary Corp" in result
+
+
+def test_digest_includes_evidence_snippets(db):
+    """Digest alert lines include top signal evidence snippets."""
+    today = date.today()
+    entity = _make_entity(db, "Evidence Corp")
+    _make_score(db, entity, 0.85, "critical", today)
+    _make_signal(db, entity, "osha_cluster", 0.9, "Three fatality incidents in Q3")
+    _make_signal(db, entity, "risk_language", 0.7, "Expanded risk disclosures in 10-K")
+    db.commit()
+
+    result = export_digest(today - timedelta(days=7), db=db)
+
+    # Evidence snippets should appear somewhere in the digest for this entity
+    assert "Evidence Corp" in result
+    assert "osha_cluster" in result or "risk_language" in result
+
+
+def test_digest_evidence_truncated_at_120_chars(db):
+    """Evidence text is truncated to 120 characters in the digest."""
+    today = date.today()
+    entity = _make_entity(db, "Long Evidence Corp")
+    _make_score(db, entity, 0.85, "critical", today)
+    long_text = "X" * 200
+    _make_signal(db, entity, "test_signal", 0.9, long_text)
+    db.commit()
+
+    result = export_digest(today - timedelta(days=7), db=db)
+
+    # The full 200-char string should NOT appear verbatim
+    assert long_text not in result
+    # But the first 120 chars should be present
+    assert "X" * 120 in result
 
 
 def test_digest_sector_summary_appears(db):

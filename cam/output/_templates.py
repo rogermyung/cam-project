@@ -1,16 +1,19 @@
 """
 Static HTML dashboard page templates for M14 — Output Layer.
 
-These pages load the exported JSON files via fetch() and require a simple
-HTTP server (e.g. ``python -m http.server``) or static hosting (S3, GitHub
-Pages, Netlify).  No build step or framework is required.
+These pages load data from companion ``.js`` files (e.g. ``alerts.js``)
+using dynamic ``<script>`` tag insertion via the ``loadScript()`` helper.
+This approach works from any static host *and* directly from the filesystem
+via ``file://`` URIs — no HTTP server required.
+
+No build step or framework is required.
 
 All user-supplied strings from the database are HTML-escaped via the
 ``esc()`` helper before insertion to prevent XSS.
 """
 
 # ---------------------------------------------------------------------------
-# Shared JS snippet: HTML-escape helper, badge builder
+# Shared JS snippet: HTML-escape helper, badge builder, script loader
 # ---------------------------------------------------------------------------
 _SHARED_JS = """
   function esc(s) {
@@ -22,6 +25,15 @@ _SHARED_JS = """
   function badge(level) {
     if (!level) return '';
     return '<span class="badge badge-' + esc(level) + '">' + esc(level.toUpperCase()) + '</span>';
+  }
+  function loadScript(src) {
+    return new Promise(function(resolve, reject) {
+      var s = document.createElement('script');
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
   }
 """
 
@@ -116,10 +128,9 @@ INDEX_HTML = (
         (a.naics_code || '').includes(q)) : allAlerts);
     }
 
-    Promise.all([fetch('alerts.json').then(r => r.json()),
-                 fetch('meta.json').then(r => r.json())])
-      .then(function(results) {
-        const alerts = results[0], meta = results[1];
+    Promise.all([loadScript('alerts.js'), loadScript('meta.js')])
+      .then(function() {
+        const alerts = window.CAM_ALERTS, meta = window.CAM_META;
         allAlerts = alerts;
         document.getElementById('meta-bar').textContent =
           'Exported: ' + meta.exported_at
@@ -129,7 +140,7 @@ INDEX_HTML = (
       })
       .catch(function() {
         document.getElementById('meta-bar').textContent =
-          'Error loading data. Serve this directory with: python -m http.server 8000';
+          'Error loading data. Run export_static_site() to regenerate the output directory.';
       });
   </script>
 </body>
@@ -210,9 +221,9 @@ ENTITY_HTML = (
       document.getElementById('content').textContent =
         'No entity ID in URL. Go to the alert feed to select an entity.';
     } else {
-      fetch('entities/' + encodeURIComponent(id) + '.json')
-        .then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-        .then(function(e) {
+      loadScript('entities/' + encodeURIComponent(id) + '.js')
+        .then(function() {
+          const e = window.CAM_ENTITY;
           document.title = 'CAM \u2014 ' + (e.canonical_name || id);
           const cur = e.current_score;
           const score = cur ? (cur.composite_score * 100).toFixed(1) + '%' : 'N/A';
@@ -273,8 +284,8 @@ ENTITY_HTML = (
         })
         .catch(function() {
           document.getElementById('content').textContent =
-            'Entity not found. Make sure the export has run and you are serving '
-            + 'from the output directory (python -m http.server 8000).';
+            'Entity not found. Make sure export_static_site() has run and '
+            + 'the output directory is complete.';
         });
     }
   </script>
@@ -422,17 +433,16 @@ INDUSTRIES_HTML = (
       }) : allEntities);
     }
 
-    fetch('entities.json')
-      .then(function(r) { return r.json(); })
-      .then(function(entities) {
-        allEntities = entities.sort(function(a, b) {
+    loadScript('entities.js')
+      .then(function() {
+        allEntities = window.CAM_ENTITIES.sort(function(a, b) {
           return (b.composite_score || 0) - (a.composite_score || 0);
         });
         renderGroups(allEntities);
       })
       .catch(function() {
         document.getElementById('groups').textContent =
-          'Error loading data. Serve from the output directory: python -m http.server 8000';
+          'Error loading data. Run export_static_site() to regenerate the output directory.';
       });
   </script>
 </body>

@@ -3,9 +3,10 @@ M14 — Output Layer: Static site export and weekly digest.
 
 ``export_static_site`` reads the ``alert_scores``, ``entities``, and
 ``signals`` tables and writes a self-contained directory of JSON files plus
-minimal HTML dashboard pages.  The output can be served from any static host
-(S3, GitHub Pages, Netlify) or a local ``python -m http.server`` — no live
-database is required at serve time.
+companion ``.js`` data files and minimal HTML dashboard pages.  The output
+can be served from any static host (S3, GitHub Pages, Netlify) or opened
+directly from the filesystem via ``file://`` URIs — no live database or HTTP
+server is required at serve time.
 
 ``export_digest`` produces a plaintext weekly email body summarising new
 critical/elevated alerts and top sectors by average composite score.  The
@@ -15,16 +16,29 @@ Directory layout written by export_static_site::
 
     {output_dir}/
     ├── meta.json          # exported_at, entity_count, alert_count, version
+    ├── meta.js            # window.CAM_META = {...};  (same data, loadable via <script src>)
     ├── alerts.json        # all alerts sorted: critical → elevated → watch, date desc
+    ├── alerts.js          # window.CAM_ALERTS = [...];
     ├── entities.json      # all entity summaries with current scores
+    ├── entities.js        # window.CAM_ENTITIES = [...];
     ├── entities/
-    │   └── {id}.json      # per-entity: score history, component breakdown, evidence
+    │   ├── {id}.json      # per-entity: score history, component breakdown, evidence
+    │   └── {id}.js        # window.CAM_ENTITY = {...};  (same data, loadable via <script src>)
     ├── index.html         # alert feed dashboard
     ├── entity.html        # entity detail page  (uses ?id= URL param)
     └── industries.html    # entities grouped by 2-digit NAICS
 
+JSON files are provided for programmatic consumers; ``.js`` companion files
+allow the HTML dashboard to work without a web server (``file://`` URIs block
+``fetch()`` but not ``<script src>``).
+
 All files are written atomically (temp file → rename) so a partial export is
-never visible to readers.  Re-running the export is idempotent.
+never visible to readers.  Re-running the export is idempotent; entity files
+that no longer correspond to a current entity are removed.
+
+History and evidence are bounded in the database query using ``ROW_NUMBER()``
+window functions so only the required rows are transferred, regardless of
+table size.
 """
 
 from __future__ import annotations
@@ -60,6 +74,9 @@ _HISTORY_LIMIT = 90
 # Maximum top-evidence items per entity included in the per-entity JSON file
 _EVIDENCE_LIMIT = 5
 
+# Maximum evidence snippets per entity included in the weekly digest
+_DIGEST_EVIDENCE_LIMIT = 2
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -76,6 +93,26 @@ def _write_atomic(path: Path, data: Any) -> None:
     tmp = path.with_suffix(".tmp")
     try:
         tmp.write_text(json.dumps(data, default=str, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _write_js_var(path: Path, var_name: str, data: Any) -> None:
+    """Write *data* as a JS global variable assignment to *path* atomically.
+
+    Produces ``window.{var_name} = <JSON>;`` so the file can be loaded via a
+    ``<script src="...">`` tag from any origin, including ``file://`` URIs
+    where ``fetch()`` is blocked by the browser's same-origin policy.
+
+    The parent directory is created if absent.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    try:
+        js = f"window.{var_name} = {json.dumps(data, default=str, indent=2)};"
+        tmp.write_text(js, encoding="utf-8")
         tmp.replace(path)
     except Exception:
         tmp.unlink(missing_ok=True)
@@ -103,61 +140,94 @@ def _fetch_current_scores(db: Session) -> list[AlertScore]:
     return list(db.scalars(stmt).all())
 
 
-def _fetch_score_history(db: Session) -> dict[Any, list[dict]]:
-    """Return score history for all entities, keyed by entity_id.
+def _fetch_score_history(db: Session) -> dict[str, list[dict]]:
+    """Return score history for all entities, keyed by ``str(entity_id)``.
 
-    At most ``_HISTORY_LIMIT`` rows per entity are kept (most recent first).
+    Uses a ``ROW_NUMBER()`` window function so the database returns at most
+    ``_HISTORY_LIMIT`` rows per entity (most recent first) rather than
+    loading the entire ``alert_scores`` table.
     """
-    stmt = select(AlertScore).order_by(
-        AlertScore.entity_id,
-        AlertScore.score_date.desc(),
+    rn = (
+        func.row_number()
+        .over(
+            partition_by=AlertScore.entity_id,
+            order_by=AlertScore.score_date.desc(),
+        )
+        .label("rn")
     )
-    history: dict[Any, list[dict]] = defaultdict(list)
-    for row in db.scalars(stmt).all():
-        bucket = history[row.entity_id]
-        if len(bucket) < _HISTORY_LIMIT:
-            bucket.append(
-                {
-                    "score_date": str(row.score_date),
-                    "composite_score": row.composite_score,
-                    "alert_level": row.alert_level,
-                }
-            )
+
+    inner = select(
+        AlertScore.entity_id,
+        AlertScore.score_date,
+        AlertScore.composite_score,
+        AlertScore.alert_level,
+        rn,
+    ).subquery()
+
+    stmt = select(inner).where(inner.c.rn <= _HISTORY_LIMIT)
+
+    history: dict[str, list[dict]] = defaultdict(list)
+    for row in db.execute(stmt).mappings().all():
+        history[str(row["entity_id"])].append(
+            {
+                "score_date": str(row["score_date"]),
+                "composite_score": row["composite_score"],
+                "alert_level": row["alert_level"],
+            }
+        )
     return dict(history)
 
 
-def _fetch_top_evidence(db: Session) -> dict[Any, list[dict]]:
-    """Return the top evidence signals for each entity, keyed by entity_id.
+def _fetch_top_evidence(db: Session) -> dict[str, list[dict]]:
+    """Return the top evidence signals for each entity, keyed by ``str(entity_id)``.
 
-    Signals are ordered by score descending so the highest-contributing
-    evidence appears first.  At most ``_EVIDENCE_LIMIT`` items per entity.
+    Uses a ``ROW_NUMBER()`` window function so the database returns at most
+    ``_EVIDENCE_LIMIT`` rows per entity (highest score first) rather than
+    loading the entire ``signals`` table.
     """
-    stmt = (
-        select(Signal)
+    rn = (
+        func.row_number()
+        .over(
+            partition_by=Signal.entity_id,
+            order_by=[
+                Signal.score.desc(),
+                Signal.signal_date.desc().nulls_last(),
+                Signal.created_at.desc(),
+            ],
+        )
+        .label("rn")
+    )
+
+    inner = (
+        select(
+            Signal.entity_id,
+            Signal.signal_type,
+            Signal.score,
+            Signal.evidence,
+            Signal.signal_date,
+            Signal.document_url,
+            rn,
+        )
         .where(
             Signal.entity_id.isnot(None),
             Signal.score.isnot(None),
         )
-        .order_by(
-            Signal.entity_id,
-            Signal.score.desc(),
-            Signal.signal_date.desc().nulls_last(),
-            Signal.created_at.desc(),
-        )
+        .subquery()
     )
-    evidence: dict[Any, list[dict]] = defaultdict(list)
-    for row in db.scalars(stmt).all():
-        bucket = evidence[row.entity_id]
-        if len(bucket) < _EVIDENCE_LIMIT:
-            bucket.append(
-                {
-                    "signal_type": row.signal_type,
-                    "score": row.score,
-                    "evidence": row.evidence,
-                    "signal_date": str(row.signal_date) if row.signal_date else None,
-                    "document_url": row.document_url,
-                }
-            )
+
+    stmt = select(inner).where(inner.c.rn <= _EVIDENCE_LIMIT)
+
+    evidence: dict[str, list[dict]] = defaultdict(list)
+    for row in db.execute(stmt).mappings().all():
+        evidence[str(row["entity_id"])].append(
+            {
+                "signal_type": row["signal_type"],
+                "score": row["score"],
+                "evidence": row["evidence"],
+                "signal_date": str(row["signal_date"]) if row["signal_date"] else None,
+                "document_url": row["document_url"],
+            }
+        )
     return dict(evidence)
 
 
@@ -174,9 +244,14 @@ def export_static_site(
     """Export all scored data to a self-contained directory of static files.
 
     Reads from the ``entities``, ``alert_scores``, and ``signals`` tables and
-    writes JSON data files plus HTML dashboard pages.  All JSON files are
-    written atomically; HTML pages are written in-place (they are identical
-    across runs).
+    writes JSON data files, companion ``.js`` data files (for ``file://`` URI
+    support), and HTML dashboard pages.  All data files are written
+    atomically; HTML pages are written in-place (they are identical across
+    runs).
+
+    After writing current entity files any stale ``entities/{id}.json`` or
+    ``entities/{id}.js`` files from previously-exported entities that are no
+    longer in the database are removed.
 
     No ``db.commit()`` is called — this function is read-only with respect to
     the database.
@@ -258,15 +333,23 @@ def export_static_site(
         "version": _VERSION,
     }
 
-    # ---- Write JSON files ----
+    # ---- Write top-level JSON + JS files ----
     files_written = 0
 
     _write_atomic(out / "meta.json", meta_data)
-    files_written += 1
+    _write_js_var(out / "meta.js", "CAM_META", meta_data)
+    files_written += 2
+
     _write_atomic(out / "alerts.json", alerts_data)
-    files_written += 1
+    _write_js_var(out / "alerts.js", "CAM_ALERTS", alerts_data)
+    files_written += 2
+
     _write_atomic(out / "entities.json", entities_data)
-    files_written += 1
+    _write_js_var(out / "entities.js", "CAM_ENTITIES", entities_data)
+    files_written += 2
+
+    # ---- Write per-entity JSON + JS files ----
+    current_ids: set[str] = {str(e.id) for e in all_entities}
 
     for e in all_entities:
         cur = score_map.get(e.id)
@@ -285,11 +368,19 @@ def export_static_site(
                 if cur
                 else None
             ),
-            "score_history": history_map.get(e.id, []),
-            "top_evidence": evidence_map.get(e.id, []),
+            "score_history": history_map.get(str(e.id), []),
+            "top_evidence": evidence_map.get(str(e.id), []),
         }
         _write_atomic(out / "entities" / f"{e.id}.json", detail)
-        files_written += 1
+        _write_js_var(out / "entities" / f"{e.id}.js", "CAM_ENTITY", detail)
+        files_written += 2
+
+    # ---- Remove stale entity files (entities no longer in the database) ----
+    entities_dir = out / "entities"
+    for stale in list(entities_dir.iterdir()):
+        if stale.suffix in {".json", ".js"} and stale.stem not in current_ids:
+            stale.unlink(missing_ok=True)
+            logger.debug("Removed stale entity file: %s", stale)
 
     # ---- Write HTML dashboard pages ----
     for filename, content in HTML_PAGES.items():
@@ -318,7 +409,8 @@ def export_digest(
 
     Summarises:
 
-    - New critical/elevated alerts with ``score_date >= since_date``
+    - New critical/elevated alerts with ``score_date >= since_date``,
+      including up to two top evidence snippets per entity
     - Top 5 sectors (2-digit NAICS) ranked by average current composite score
 
     The caller is responsible for SMTP delivery — this function only produces
@@ -368,6 +460,40 @@ def export_digest(
         for e in db.scalars(select(Entity).where(Entity.id.in_(alert_entity_ids))).all():
             alert_entity_map[e.id] = e
 
+    # ---- Fetch top evidence snippets for each alerted entity ----
+    digest_evidence: dict[str, list[str]] = defaultdict(list)
+    if alert_entity_ids:
+        ev_rn = (
+            func.row_number()
+            .over(
+                partition_by=Signal.entity_id,
+                order_by=[Signal.score.desc(), Signal.created_at.desc()],
+            )
+            .label("rn")
+        )
+        ev_inner = (
+            select(
+                Signal.entity_id,
+                Signal.signal_type,
+                Signal.evidence,
+                ev_rn,
+            )
+            .where(
+                Signal.entity_id.in_(alert_entity_ids),
+                Signal.score.isnot(None),
+            )
+            .subquery()
+        )
+        for row in (
+            db.execute(select(ev_inner).where(ev_inner.c.rn <= _DIGEST_EVIDENCE_LIMIT))
+            .mappings()
+            .all()
+        ):
+            ev_text = (row["evidence"] or "")[:120]
+            digest_evidence[str(row["entity_id"])].append(
+                f"    \u203a {row['signal_type']}: {ev_text}"
+            )
+
     # ---- Fetch all current scores for sector summary ----
     all_current = _fetch_current_scores(db)
     all_entity_map: dict[Any, Entity] = {e.id: e for e in db.scalars(select(Entity)).all()}
@@ -413,6 +539,7 @@ def export_digest(
                 f"  [{s.alert_level.upper()}] {name}"
                 f" \u2014 score {s.composite_score:.3f} ({s.score_date})"
             )
+            lines.extend(digest_evidence.get(str(s.entity_id), []))
 
     lines += [
         "",
