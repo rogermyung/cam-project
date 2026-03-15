@@ -931,45 +931,91 @@ class Alert:
 ## M14 — Output Layer
 
 ### Goal
-Make scored data accessible via API, dashboard, and digest. The audience is regulatory staff, congressional committee researchers, and investigative journalists — not data scientists. Outputs must be immediately actionable.
+Export scored data as static JSON files and a minimal HTML dashboard, served from S3/CDN, GitHub Pages, or any static host. The audience is regulatory staff, congressional committee researchers, and investigative journalists. No live database connection is required at serve time — data is exported once per day after the scoring run completes.
 
 ### Components
 
-#### REST API
+#### Static Data Export
+
+`export_static_site(output_dir: str | Path, *, db: Session) -> dict[str, int]`
+
+Reads from `alert_scores`, `entities`, and `signals` tables and writes a self-contained directory of JSON files:
+
 ```
-GET  /entities                          # List all monitored entities with current scores
-GET  /entities/{id}                     # Detail view: scores, signals, evidence
-GET  /entities/{id}/timeline            # Score history over time
-GET  /alerts?level=elevated&since=date  # Recent alerts above threshold
-GET  /alerts/{id}                       # Alert detail with evidence
-GET  /reports/pe-comparison/{naics}     # PE vs non-PE comparison for industry
-GET  /reports/industry-benchmarks       # Violation rate benchmarks by industry
+{output_dir}/
+├── meta.json                    # export timestamp, entity count, alert count
+├── alerts.json                  # all alerts sorted by severity then date desc
+├── entities.json                # all entities with current score summaries
+└── entities/
+    └── {entity_id}.json         # per-entity: score history, component breakdown, evidence
 ```
 
-#### Dashboard
-Simple server-rendered HTML dashboard (Flask + Jinja2 or FastAPI + Jinja2). No JavaScript framework required. Priority views:
+File schemas:
 
-1. **Alert feed** — sorted by severity, most recent first; each alert links to entity detail
-2. **Entity detail** — score timeline, component breakdown, source evidence with links
-3. **Industry view** — all entities in a sector sorted by composite score
-4. **Merger watch** — recent HSR filings with vertical integration scores
+| File | Contents |
+|------|----------|
+| `meta.json` | `{exported_at, entity_count, alert_count, version}` |
+| `alerts.json` | Array of alert objects sorted critical → elevated → watch, then date desc |
+| `entities.json` | Array of `{id, canonical_name, composite_score, alert_level, score_date}` |
+| `entities/{id}.json` | Full record: score timeline, per-component breakdown, top evidence, naics_code |
+
+Re-running export is **idempotent** — files are written atomically (write to temp, then rename) so partial exports are never served.
+
+#### Static HTML Dashboard
+
+Minimal vanilla-JS HTML pages that load the exported JSON via `fetch()`. No build step, no bundler, no framework. Works from `file://` URI or any CDN (S3 + CloudFront, GitHub Pages).
+
+Priority views:
+
+1. **index.html** — Alert feed sorted by severity (critical first), links to entity detail
+2. **entity.html?id={uuid}** — Score timeline, component breakdown, source evidence with links
+3. **industries.html** — All entities grouped by 2-digit NAICS, sorted by composite score
 
 #### Weekly Digest
-Plaintext email digest (no HTML required) summarizing:
-- New critical/elevated alerts since last digest
-- Mergers scored above 0.6 in the past week
-- Industry sectors with rising aggregate scores
+
+`export_digest(since_date: date, *, db: Session) -> str`
+
+Plaintext email digest (SMTP via `cam/config.py`) summarizing:
+- New critical/elevated alerts since `since_date`
+- Sectors with rising aggregate scores
+- Mergers scored above 0.6 in the look-back period
+
+### Key Functions
+
+```python
+def export_static_site(
+    output_dir: str | Path,
+    *,
+    db: Session,
+) -> dict[str, int]:
+    """Export all scored data to a directory of static JSON files.
+
+    Returns a summary dict: {entities, alerts, files_written}.
+    """
+
+def export_digest(
+    since_date: date,
+    *,
+    db: Session,
+) -> str:
+    """Return plaintext weekly digest body (does not send; caller handles SMTP)."""
+```
 
 ### Test Requirements
-- API endpoint tests using FastAPI TestClient (no live DB required; use test fixtures)
-- Test that all API responses include evidence citations, not just scores
-- Test that digest correctly filters to only new-since-last-digest alerts
-- Test API authentication (bearer token, configurable via env)
+- `export_static_site` writes all required files to a `tmp_path`; each file is valid JSON
+- `entities/{id}.json` is self-contained (all required fields present without further DB queries)
+- `alerts.json` is sorted correctly: critical before elevated before watch, then date descending
+- `meta.json` contains correct `entity_count` and `alert_count`
+- Digest text includes entities at elevated/critical; excludes below-watch entities
+- Idempotency: calling `export_static_site` twice with same data overwrites cleanly (no duplicates, no leftover files from prior run)
+- Performance: export completes in < 60 seconds for 10,000 entities (benchmark test)
 
 ### Acceptance Criteria
-- [ ] API returns responses in < 200ms for all list endpoints (DB indexes required)
-- [ ] Dashboard renders correctly in major browsers without JavaScript
-- [ ] Weekly digest sends successfully and contains no entities without evidence
+- [ ] `export_static_site` writes all four file types with valid JSON in < 60 s for 10 K entities
+- [ ] `entities/{id}.json` is fully self-contained (no live DB query at serve time)
+- [ ] Static HTML pages load and render correctly from `file://` URI (no server required)
+- [ ] Weekly digest email sends successfully via SMTP and contains evidence for each entity listed
+- [ ] Re-running export is idempotent (same data → same files; no partial writes visible)
 
 ---
 
