@@ -2,11 +2,8 @@
 Unit tests for M14 — Output Layer.
 
 Covers:
-- export_static_site: writes all required files (meta, alerts, entities, per-entity, HTML)
+- export_static_site: writes all required JSON data files (meta, alerts, entities, per-entity)
 - All JSON files are valid and parseable
-- Companion .js files are written alongside each .json file
-- .js files contain correct window.CAM_* global assignments
-- HTML pages use loadScript() instead of fetch() for file:// compatibility
 - meta.json has correct entity_count and alert_count
 - alerts.json sorted correctly: critical → elevated → watch, then date descending
 - alerts.json excludes entities with no alert level (score < watch threshold)
@@ -16,7 +13,6 @@ Covers:
 - top_evidence included in per-entity JSON
 - entities without any alert score get null current_score
 - return value structure: {entities, alerts, files_written}
-- HTML dashboard pages written (index.html, entity.html, industries.html)
 - Stale entity files are removed on re-export
 - Idempotency: second export overwrites cleanly, same counts
 - export_digest: includes elevated/critical alerts on or after since_date
@@ -119,27 +115,22 @@ def _make_signal(
 
 
 def test_export_writes_required_files(db, tmp_path):
-    """All required files are present after a successful export."""
+    """All required JSON data files are present after a successful export."""
     entity = _make_entity(db)
     _make_score(db, entity, 0.85, "critical")
     db.commit()
 
     export_static_site(tmp_path, db=db)
 
-    # JSON data files
+    # JSON data files only (no .js or HTML in the new architecture)
     assert (tmp_path / "meta.json").exists()
     assert (tmp_path / "alerts.json").exists()
     assert (tmp_path / "entities.json").exists()
     assert (tmp_path / "entities" / f"{entity.id}.json").exists()
-    # Companion JS files
-    assert (tmp_path / "meta.js").exists()
-    assert (tmp_path / "alerts.js").exists()
-    assert (tmp_path / "entities.js").exists()
-    assert (tmp_path / "entities" / f"{entity.id}.js").exists()
-    # HTML pages
-    assert (tmp_path / "index.html").exists()
-    assert (tmp_path / "entity.html").exists()
-    assert (tmp_path / "industries.html").exists()
+
+    # Confirm no .js or .html files are written
+    assert not (tmp_path / "meta.js").exists()
+    assert not (tmp_path / "index.html").exists()
 
 
 def test_all_json_files_are_valid(db, tmp_path):
@@ -158,74 +149,6 @@ def test_all_json_files_are_valid(db, tmp_path):
     ]:
         data = json.loads(jf.read_text())
         assert data is not None
-
-
-def test_js_files_have_window_assignment(db, tmp_path):
-    """Each .js companion file starts with a window.CAM_* assignment."""
-    entity = _make_entity(db)
-    _make_score(db, entity, 0.85, "critical")
-    db.commit()
-
-    export_static_site(tmp_path, db=db)
-
-    expected = {
-        tmp_path / "meta.js": "window.CAM_META",
-        tmp_path / "alerts.js": "window.CAM_ALERTS",
-        tmp_path / "entities.js": "window.CAM_ENTITIES",
-        tmp_path / "entities" / f"{entity.id}.js": "window.CAM_ENTITY",
-    }
-    for js_path, expected_prefix in expected.items():
-        content = js_path.read_text()
-        assert content.startswith(expected_prefix), (
-            f"{js_path.name} should start with '{expected_prefix}'"
-        )
-
-
-def test_js_files_contain_valid_json_payload(db, tmp_path):
-    """The JSON payload embedded in each .js file is valid JSON."""
-    entity = _make_entity(db)
-    _make_score(db, entity, 0.85, "critical")
-    db.commit()
-
-    export_static_site(tmp_path, db=db)
-
-    for js_path in [
-        tmp_path / "meta.js",
-        tmp_path / "alerts.js",
-        tmp_path / "entities.js",
-        tmp_path / "entities" / f"{entity.id}.js",
-    ]:
-        content = js_path.read_text()
-        # Strip "window.CAM_XXX = " prefix and trailing ";"
-        payload = content[content.index("=") + 1 :].rstrip(";").strip()
-        data = json.loads(payload)
-        assert data is not None
-
-
-def test_html_files_are_non_empty(db, tmp_path):
-    """HTML dashboard pages must be written and non-empty."""
-    db.commit()
-    export_static_site(tmp_path, db=db)
-
-    for page in ["index.html", "entity.html", "industries.html"]:
-        content = (tmp_path / page).read_text()
-        assert len(content) > 100  # not trivially empty
-        assert "<!DOCTYPE html>" in content
-
-
-def test_html_uses_load_script_not_fetch(db, tmp_path):
-    """HTML pages use loadScript() for data loading, not fetch(), for file:// support."""
-    db.commit()
-    export_static_site(tmp_path, db=db)
-
-    for page in ["index.html", "entity.html", "industries.html"]:
-        content = (tmp_path / page).read_text()
-        assert "loadScript(" in content, f"{page} should use loadScript()"
-        # Ensure there are no bare fetch() calls for data loading
-        # (fetch may appear in the loadScript polyfill comment but not as a data loader)
-        assert "fetch('alerts.json')" not in content
-        assert "fetch('entities.json')" not in content
-        assert "fetch('entities/" not in content
 
 
 # ---------------------------------------------------------------------------
@@ -531,7 +454,7 @@ def test_return_value_structure(db, tmp_path):
 
 
 def test_return_value_files_written_count(db, tmp_path):
-    """files_written = 3 JSON + 3 JS + N entity JSON + N entity JS + 3 HTML pages."""
+    """files_written = 3 top-level JSON + 1 per-entity JSON = 3 + N."""
     e1 = _make_entity(db, "A")
     _make_entity(db, "B")
     _make_score(db, e1, 0.85, "critical")
@@ -539,8 +462,8 @@ def test_return_value_files_written_count(db, tmp_path):
 
     result = export_static_site(tmp_path, db=db)
 
-    # 3 top-level JSON + 3 top-level JS + 2 entity JSON + 2 entity JS + 3 HTML = 13
-    assert result["files_written"] == 13
+    # 3 top-level JSON (meta + alerts + entities) + 2 entity JSON = 5
+    assert result["files_written"] == 5
 
 
 # ---------------------------------------------------------------------------
@@ -557,21 +480,17 @@ def test_stale_entity_files_removed(db, tmp_path):
     # First export — creates the expected entity files
     export_static_site(tmp_path, db=db)
 
-    # Inject stale files simulating a previously-exported entity no longer in DB
+    # Inject stale .json file simulating a previously-exported entity no longer in DB
     stale_id = uuid.uuid4()
     stale_json = tmp_path / "entities" / f"{stale_id}.json"
-    stale_js = tmp_path / "entities" / f"{stale_id}.js"
     stale_json.write_text("{}", encoding="utf-8")
-    stale_js.write_text("window.CAM_ENTITY = {};", encoding="utf-8")
 
     # Second export — must remove stale files
     export_static_site(tmp_path, db=db)
 
     assert not stale_json.exists(), "Stale .json file should have been removed"
-    assert not stale_js.exists(), "Stale .js file should have been removed"
-    # Current entity's files must still exist
+    # Current entity's file must still exist
     assert (tmp_path / "entities" / f"{entity.id}.json").exists()
-    assert (tmp_path / "entities" / f"{entity.id}.js").exists()
 
 
 # ---------------------------------------------------------------------------

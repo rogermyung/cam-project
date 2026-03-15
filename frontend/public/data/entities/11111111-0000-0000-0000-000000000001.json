@@ -1,0 +1,70 @@
+{
+  "id": "11111111-0000-0000-0000-000000000001",
+  "canonical_name": "Ares Management Corp",
+  "ticker": "ARES",
+  "naics_code": "52",
+  "current_score": {
+    "composite_score": 0.87,
+    "alert_level": "critical",
+    "score_date": "2026-03-15",
+    "component_scores": {
+      "cross_agency_composite": 0.92,
+      "risk_language_expansion": 0.85,
+      "earnings_divergence": 0.78,
+      "proxy_escalation": 0.61,
+      "merger_vertical_risk": 0.40,
+      "pe_warn_flag": 1.0
+    }
+  },
+  "score_history": [
+    {"score_date": "2026-03-15", "composite_score": 0.87, "alert_level": "critical"},
+    {"score_date": "2026-03-14", "composite_score": 0.84, "alert_level": "critical"},
+    {"score_date": "2026-03-13", "composite_score": 0.79, "alert_level": "elevated"},
+    {"score_date": "2026-03-12", "composite_score": 0.73, "alert_level": "elevated"},
+    {"score_date": "2026-03-11", "composite_score": 0.68, "alert_level": "elevated"},
+    {"score_date": "2026-03-10", "composite_score": 0.61, "alert_level": "elevated"},
+    {"score_date": "2026-03-09", "composite_score": 0.55, "alert_level": "watch"},
+    {"score_date": "2026-03-08", "composite_score": 0.48, "alert_level": "watch"},
+    {"score_date": "2026-03-07", "composite_score": 0.42, "alert_level": "watch"},
+    {"score_date": "2026-03-06", "composite_score": 0.38, "alert_level": null},
+    {"score_date": "2026-03-05", "composite_score": 0.35, "alert_level": null},
+    {"score_date": "2026-03-04", "composite_score": 0.31, "alert_level": null}
+  ],
+  "top_evidence": [
+    {
+      "signal_type": "cross_agency_composite",
+      "score": 0.92,
+      "evidence": "14 OSHA serious violations Q4 2025; 3 EPA consent orders active; CFPB complaint spike 340% vs industry baseline",
+      "signal_date": "2026-03-15",
+      "document_url": null
+    },
+    {
+      "signal_type": "risk_language_expansion",
+      "score": 0.85,
+      "evidence": "10-K risk section expanded by 2,400 words YoY; 47 new risk factor sentences identified including 'liquidity constraints' and 'covenant compliance'",
+      "signal_date": "2026-02-28",
+      "document_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=ARES&type=10-K"
+    },
+    {
+      "signal_type": "earnings_divergence",
+      "score": 0.78,
+      "evidence": "Q3 2025 earnings call: 23 negative sentiment phrases vs 8 in prior quarter; management tone divergence score 0.78",
+      "signal_date": "2025-11-05",
+      "document_url": null
+    },
+    {
+      "signal_type": "proxy_escalation",
+      "score": 0.61,
+      "evidence": "Proxy statement: 2 shareholder proposals related to executive compensation clawback; ISS recommendation against 3 directors",
+      "signal_date": "2026-03-01",
+      "document_url": null
+    },
+    {
+      "signal_type": "pe_warn_flag",
+      "score": 1.0,
+      "evidence": "Confirmed PE ownership: Ares Management LP, acquired 2021-Q2. Source: PE Stakeholder Project database.",
+      "signal_date": "2026-01-01",
+      "document_url": null
+    }
+  ]
+}

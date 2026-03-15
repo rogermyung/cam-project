@@ -1,0 +1,50 @@
+[
+  {
+    "entity_id": "11111111-0000-0000-0000-000000000001",
+    "canonical_name": "Ares Management Corp",
+    "alert_level": "critical",
+    "composite_score": 0.87,
+    "score_date": "2026-03-15",
+    "component_scores": {
+      "cross_agency_composite": 0.92,
+      "risk_language_expansion": 0.85,
+      "earnings_divergence": 0.78,
+      "proxy_escalation": 0.61,
+      "merger_vertical_risk": 0.40,
+      "pe_warn_flag": 1.0
+    },
+    "naics_code": "52"
+  },
+  {
+    "entity_id": "22222222-0000-0000-0000-000000000002",
+    "canonical_name": "TeamHealth Holdings",
+    "alert_level": "elevated",
+    "composite_score": 0.71,
+    "score_date": "2026-03-14",
+    "component_scores": {
+      "cross_agency_composite": 0.74,
+      "risk_language_expansion": 0.65,
+      "earnings_divergence": 0.58,
+      "proxy_escalation": 0.72,
+      "merger_vertical_risk": 0.55,
+      "pe_warn_flag": 1.0
+    },
+    "naics_code": "62"
+  },
+  {
+    "entity_id": "33333333-0000-0000-0000-000000000003",
+    "canonical_name": "US Foods Holding Corp",
+    "alert_level": "watch",
+    "composite_score": 0.44,
+    "score_date": "2026-03-13",
+    "component_scores": {
+      "cross_agency_composite": 0.38,
+      "risk_language_expansion": 0.50,
+      "earnings_divergence": 0.30,
+      "proxy_escalation": 0.42,
+      "merger_vertical_risk": 0.61,
+      "pe_warn_flag": 0.0
+    },
+    "naics_code": "42"
+  }
+]

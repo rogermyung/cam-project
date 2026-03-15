@@ -11,9 +11,11 @@ This is the Corporate Accountability Monitor (CAM): a Python system that ingests
 - **Redis** — Celery task broker
 - **S3-compatible** (MinIO locally) — raw document storage
 - **Celery** — background task queue
-- **FastAPI + Jinja2** — output API and dashboard
+- **FastAPI + Jinja2** — output API and digest
 - **pytest** — all tests; run with `PYTHONPATH=. .venv/bin/python -m pytest`
 - **uv** — package manager (`uv pip install`, `uv venv`)
+- **React + TypeScript** — frontend dashboard (Vite, shadcn/ui, Recharts)
+- **GitHub Pages** — static hosting; Vite builds into `site/`, Python writes data into `site/data/`
 
 ## Repository Layout
 
@@ -33,6 +35,10 @@ tests/
 ├── conftest.py     # Shared fixtures; requires_db skip marker for postgres-gated tests
 ├── fixtures/       # Canned API responses (edgar/, osha/, cfpb/, epa/)
 └── unit/           # Unit tests per module
+frontend/           # React + TypeScript dashboard (Vite + shadcn/ui)
+├── src/            # Pages, components, lib (data.ts, naics.ts, utils.ts)
+├── public/data/    # Sample JSON fixtures for local dev
+└── package.json
 ```
 
 ## Implementing Modules
@@ -138,6 +144,10 @@ docker-compose up
 
 # Entity review queue CLI
 PYTHONPATH=. .venv/bin/python -m cam.entity.cli list
+
+# Frontend dev (uses sample fixtures in frontend/public/data/)
+cd frontend && npm run dev   # http://localhost:5173/cam-project/
+cd frontend && npm run build # build into ../site/
 
 # Resolve CLAUDE.md rebase conflict markers (Edit tool can't read files with conflict markers)
 python3 -c "
