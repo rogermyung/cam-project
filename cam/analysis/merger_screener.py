@@ -14,6 +14,7 @@ live database.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -103,8 +104,10 @@ _FACTOR_KEYWORDS: dict[str, list[str]] = {
         "pricing power",
         "price maker",
     ],
+    # Keywords that imply high concentration without requiring a numeric HHI value.
+    # Plain "hhi" is intentionally excluded here; numeric HHI values are tested
+    # separately by _detect_high_hhi() to enforce the > 2500 threshold.
     "high_hhi_either_market": [
-        "hhi",
         "highly concentrated",
         "market concentration",
         "dominant market position",
@@ -114,6 +117,14 @@ _FACTOR_KEYWORDS: dict[str, list[str]] = {
         "near-monopoly",
     ],
 }
+
+# Regex to extract numeric HHI values from text (e.g. "HHI of 2,800" or "HHI exceeding 2500").
+# Captures the digits after "hhi" with optional separators.
+_HHI_NUMERIC_RE = re.compile(
+    r"\bhhi\b[^0-9]{0,30}(\d[\d,]*)",
+    re.IGNORECASE,
+)
+_HHI_THRESHOLD = 2500  # PLAN.md: "HHI > 2500 in either pre-merger market"
 
 # ---------------------------------------------------------------------------
 # Comparable precedent case references
@@ -209,14 +220,43 @@ class MergerRiskScore:
 # ---------------------------------------------------------------------------
 
 
+def _detect_high_hhi(text: str) -> bool:
+    """Return True if the text contains an explicit HHI value above the 2500 threshold.
+
+    The PLAN.md spec defines this factor as "HHI > 2500 in either pre-merger
+    market", so bare mentions of "hhi" without a qualifying number must NOT
+    trigger the factor.  This function parses every "HHI <number>" pattern and
+    returns True only when at least one extracted value exceeds the threshold.
+    """
+    for match in _HHI_NUMERIC_RE.finditer(text):
+        try:
+            value = int(match.group(1).replace(",", ""))
+            if value > _HHI_THRESHOLD:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _detect_text_factors(combined_text: str) -> set[str]:
-    """Return the set of VERTICAL_RISK_FACTORS keys detected via keyword matching."""
+    """Return the set of VERTICAL_RISK_FACTORS keys detected via keyword and numeric matching.
+
+    ``high_hhi_either_market`` is detected by two independent paths:
+    1. Qualitative terms (e.g. "highly concentrated", "oligopoly") — trigger
+       regardless of any numeric value in the text.
+    2. Explicit numeric HHI values — trigger only when a parsed value > 2500,
+       matching the PLAN.md spec of "HHI > 2500 in either pre-merger market".
+    """
     lower = combined_text.lower()
-    return {
+    detected = {
         factor
         for factor, keywords in _FACTOR_KEYWORDS.items()
         if any(kw in lower for kw in keywords)
     }
+    # Enforce numeric threshold for explicit HHI mentions
+    if _detect_high_hhi(combined_text):
+        detected.add("high_hhi_either_market")
+    return detected
 
 
 def _generate_overlap_description(factors: list[str]) -> str:
@@ -315,10 +355,20 @@ def score_merger(
     detected: set[str] = _detect_text_factors(combined)
 
     # Prior-merger history (injectable; defaults to no history)
-    prior_count = 0
+    prior_count: int = 0
     if prior_merger_lookup is not None:
         try:
-            prior_count = prior_merger_lookup(acquirer_entity_id)
+            raw = prior_merger_lookup(acquirer_entity_id)
+            # Guard against non-int returns (e.g. None, float, str) from the
+            # injectable lookup — cast safely so that `prior_count > 0` never
+            # raises TypeError.
+            prior_count = int(raw) if raw is not None else 0
+        except (TypeError, ValueError):
+            logger.warning(
+                "prior_merger_lookup returned a non-integer value for entity %s; "
+                "treating prior count as 0.",
+                acquirer_entity_id,
+            )
         except Exception:
             logger.warning(
                 "prior_merger_lookup raised an exception for entity %s; treating prior count as 0.",

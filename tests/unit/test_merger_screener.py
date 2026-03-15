@@ -259,6 +259,77 @@ def test_no_prior_merger_lookup_omits_history_factor():
     assert "prior_vertical_merger_same_firm" not in result.risk_factors_present
 
 
+def test_prior_merger_lookup_returns_none_handled_gracefully():
+    """prior_merger_lookup returning None must not raise TypeError; factor omitted."""
+    result = score_merger(
+        _ACQUIRER_ID,
+        CONG_TARGET,
+        CONG_DEAL,
+        prior_merger_lookup=lambda _: None,  # type: ignore[return-value]
+    )
+    assert isinstance(result, MergerRiskScore)
+    assert "prior_vertical_merger_same_firm" not in result.risk_factors_present
+
+
+def test_prior_merger_lookup_returns_string_number_handled():
+    """prior_merger_lookup returning a string int is cast safely."""
+    result = score_merger(
+        _ACQUIRER_ID,
+        CONG_TARGET,
+        CONG_DEAL,
+        prior_merger_lookup=lambda _: "3",  # type: ignore[return-value]
+    )
+    assert isinstance(result, MergerRiskScore)
+    assert "prior_vertical_merger_same_firm" in result.risk_factors_present
+
+
+# ---------------------------------------------------------------------------
+# HHI threshold enforcement
+# ---------------------------------------------------------------------------
+
+
+def test_hhi_above_threshold_triggers_factor():
+    """Explicit HHI value above 2500 must trigger high_hhi_either_market."""
+    from cam.analysis.merger_screener import _detect_text_factors
+
+    detected = _detect_text_factors("The combined market has an HHI of 3,200.")
+    assert "high_hhi_either_market" in detected
+
+
+def test_hhi_below_threshold_does_not_trigger():
+    """Explicit HHI value <= 2500 must NOT trigger high_hhi_either_market."""
+    from cam.analysis.merger_screener import _detect_text_factors
+
+    detected = _detect_text_factors("Market HHI is 1,800 — unconcentrated.")
+    assert "high_hhi_either_market" not in detected
+
+
+def test_hhi_mention_without_number_does_not_trigger():
+    """Bare 'HHI' without a qualifying number must NOT trigger the factor."""
+    from cam.analysis.merger_screener import _detect_text_factors
+
+    detected = _detect_text_factors(
+        "The DOJ will compute HHI as part of its standard merger review process."
+    )
+    assert "high_hhi_either_market" not in detected
+
+
+def test_hhi_exceeding_phrasing_triggers_factor():
+    """'HHI exceeding 2600' (strictly > 2500) must trigger the factor."""
+    from cam.analysis.merger_screener import _detect_text_factors
+
+    detected = _detect_text_factors("Healthcare payer market HHI exceeding 2,600.")
+    assert "high_hhi_either_market" in detected
+
+
+def test_qualitative_concentration_terms_trigger_without_hhi_number():
+    """Terms like 'highly concentrated' trigger factor even with no HHI number."""
+    from cam.analysis.merger_screener import _detect_text_factors
+
+    detected = _detect_text_factors("The market is highly concentrated with few competitors.")
+    assert "high_hhi_either_market" in detected
+
+
 # ---------------------------------------------------------------------------
 # Score explainability
 # ---------------------------------------------------------------------------
@@ -397,7 +468,11 @@ def test_detect_text_factors_hhi():
 
 
 def test_detect_text_factors_case_insensitive():
-    detected = _detect_text_factors("BOTTLENECK INSURANCE MARKETPLACE FORMULARY HHI")
+    # "HHI" alone (no number) no longer triggers high_hhi_either_market;
+    # use "HIGHLY CONCENTRATED" for the qualitative-keyword path instead.
+    detected = _detect_text_factors(
+        "BOTTLENECK INSURANCE MARKETPLACE FORMULARY HIGHLY CONCENTRATED"
+    )
     assert "controls_bottleneck_input" in detected
     assert "payer_plus_provider" in detected
     assert "platform_plus_seller" in detected
