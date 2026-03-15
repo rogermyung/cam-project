@@ -75,9 +75,9 @@ tests/
 | M7 — 10-K Risk Language NLP | #8 | ✅ Complete | #24 |
 | M8 — Earnings Call NLP | #9 | ✅ Complete | #25 |
 | M9 — Proxy Statement Parser | #10 | ✅ Complete | #26 |
-| M10 — HSR Merger Screener | #11 | 🔄 In Progress | — |
+| M10 — HSR Merger Screener | #11 | ✅ Complete | #27 |
 | M11 — WARN Act Ingestion | #12 | 🔄 In Progress | — |
-| M12 — PE/Bankruptcy Correlator | #13 | ⬜ TODO | — |
+| M12 — PE/Bankruptcy Correlator | #13 | 🔄 In Progress | — |
 | M13 — Alert Scoring Engine | #14 | ⬜ TODO | — |
 | M14 — Output Layer | #15 | ⬜ TODO | — |
 
