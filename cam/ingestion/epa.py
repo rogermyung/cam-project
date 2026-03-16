@@ -16,9 +16,11 @@ Data sources:
 from __future__ import annotations
 
 import csv
+import io
 import logging
 import math
 import tempfile
+import zipfile
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -43,7 +45,11 @@ logger = logging.getLogger(__name__)
 
 # Base URLs
 _TRI_BULK_BASE = "https://www.epa.gov/sites/default/files/tri"
-_ECHO_CASE_URL = "https://echo.epa.gov/api/case/download"
+# ECHO enforcement bulk download — updated daily, contains CASE_ENFORCEMENTS.csv.
+# The old /api/case/download REST endpoint was decommissioned; this zip is the
+# current replacement: https://echo.epa.gov/files/echodownloads/
+_ECHO_BULK_ZIP_URL = "https://echo.epa.gov/files/echodownloads/case_downloads.zip"
+_ECHO_CASE_CSV_NAME = "CASE_ENFORCEMENTS.csv"
 
 # TRI column names (the real TRI CSV uses fixed positional columns)
 _TRI_FACILITY_NAME_COL = "FACILITY_NAME"
@@ -311,31 +317,56 @@ def _fetch_echo_cases(
     *,
     client: httpx.Client | None = None,
 ) -> list[dict]:
-    """Fetch enforcement cases from the ECHO API since since_date."""
-    params = {
-        "p_date_since": since_date.strftime("%m/%d/%Y"),
-        "output": "JSON",
-    }
+    """Fetch enforcement cases from the ECHO bulk download (updated daily).
+
+    The old /api/case/download REST endpoint was decommissioned.  The current
+    source is a zip archive at ``_ECHO_BULK_ZIP_URL`` containing
+    ``CASE_ENFORCEMENTS.csv``.  We download the full archive, extract the CSV
+    in-memory, and filter rows to those with action_date >= since_date so the
+    return contract matches the old API behaviour.
+    """
+    logger.info("Downloading ECHO bulk enforcement zip from %s", _ECHO_BULK_ZIP_URL)
     try:
-        resp = _get(_ECHO_CASE_URL, params=params, client=client)
+        resp = _get(_ECHO_BULK_ZIP_URL, client=client)
     except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            logger.warning(
-                "ECHO API returned 404 for %s — endpoint may be unavailable, returning empty",
-                _ECHO_CASE_URL,
-            )
-            return []
-        raise
-    data = resp.json()
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        results = data.get("Results", data)
-        if isinstance(results, dict):
-            return results.get(_ECHO_CASE_LIST_KEY, [])
+        logger.warning(
+            "ECHO bulk zip returned %d — returning empty",
+            exc.response.status_code,
+        )
         return []
-    logger.warning("Unexpected ECHO API response type %s", type(data).__name__)
-    return []
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            if _ECHO_CASE_CSV_NAME not in zf.namelist():
+                logger.warning(
+                    "Expected %r in ECHO zip but found: %s",
+                    _ECHO_CASE_CSV_NAME,
+                    zf.namelist(),
+                )
+                return []
+            with zf.open(_ECHO_CASE_CSV_NAME) as fh:
+                reader = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8-sig"))
+                cases: list[dict] = []
+                for row in reader:
+                    d = _parse_date(row.get("ACTIVITY_DATE") or row.get("action_date"))
+                    if d is not None and d >= since_date:
+                        # Normalise to lowercase keys matching the old API shape.
+                        cases.append(
+                            {
+                                "activity_id": row.get("ACTIVITY_ID", ""),
+                                "facility_name": row.get("FAC_NAME", ""),
+                                "action_date": row.get("ACTIVITY_DATE", ""),
+                                "penalty_assessed": row.get("PENALTY_ASSESSED_AMT", ""),
+                                "description": row.get("ACTIVITY_TYPE_DESC", ""),
+                                **{k.lower(): v for k, v in row.items()},
+                            }
+                        )
+    except (zipfile.BadZipFile, KeyError, UnicodeDecodeError) as exc:
+        logger.warning("Failed to parse ECHO bulk zip: %s", exc)
+        return []
+
+    logger.info("ECHO bulk zip: %d cases on or after %s", len(cases), since_date)
+    return cases
 
 
 def ingest_echo_violations(

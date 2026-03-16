@@ -104,7 +104,13 @@ def _ingest_source(source: str, since: date, args: argparse.Namespace) -> None:
         from cam.ingestion.osha import download_bulk_data, ingest_from_csv
 
         total_ingested = 0
-        for year in range(since.year, date.today().year + 1):
+        # Start one year before since.year so that cross-year windows (e.g.
+        # since=2025-12-01 run in 2026) pick up prior-year data, and so that
+        # when the current-year CSV is not yet published we still attempt the
+        # prior year.  ingest_from_csv filters by since_date so no out-of-window
+        # rows are admitted.
+        start_year = since.year - 1
+        for year in range(start_year, date.today().year + 1):
             try:
                 csv_path = download_bulk_data(year)
             except httpx.HTTPStatusError as exc:

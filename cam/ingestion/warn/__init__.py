@@ -110,7 +110,7 @@ def _fetch(url: str, *, client: httpx.Client | None = None) -> bytes:
             from cam.config import get_settings
 
             timeout = get_settings().warn_http_timeout
-            resp = httpx.get(url, timeout=timeout)
+            resp = httpx.get(url, timeout=timeout, follow_redirects=True)
         resp.raise_for_status()
         return resp.content
 
