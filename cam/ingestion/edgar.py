@@ -37,7 +37,8 @@ _EDGAR_SUBMISSIONS_BASE = "https://data.sec.gov/submissions"
 _EDGAR_COMPANY_TICKERS = "https://data.sec.gov/files/company_tickers.json"
 _EDGAR_ARCHIVES_BASE = "https://www.sec.gov/Archives/edgar/data"
 _EDGAR_XBRL_BASE = "https://data.sec.gov/api/xbrl/companyfacts"
-_EDGAR_FULL_INDEX_BASE = "https://www.sec.gov/Archives/edgar/full-index"
+# _EDGAR_FULL_INDEX_BASE is now configured via cam.config Settings
+# (edgar_full_index_base) to allow environment-specific overrides.
 
 # Key US-GAAP concepts to extract from the companyfacts endpoint.
 _XBRL_KEY_CONCEPTS = ("Revenues", "Assets", "NetIncomeLoss", "StockholdersEquity")
@@ -434,17 +435,23 @@ def download_filing(
 def _quarters_for_since(since_date: date) -> list[tuple[int, int]]:
     """Return ``(year, quarter)`` pairs from *since_date* through today.
 
-    Capped at ``_MAX_INDEX_QUARTERS`` quarters so the index scan always costs
-    a bounded number of HTTP calls, even when *since_date* is years in the past.
+    Capped at ``Settings.edgar_max_index_quarters`` quarters (default 4) so
+    the index scan always costs a bounded number of HTTP calls, even when
+    *since_date* is years in the past.
+
+    When *since_date* falls before the scan window a warning is logged so
+    that operators know the backfill may be incomplete.  Increase
+    ``EDGAR_MAX_INDEX_QUARTERS`` (env var) to widen the scan window.
 
     Examples
     --------
-    With today = 2026-03-15 and _MAX_INDEX_QUARTERS = 4::
+    With today = 2026-03-15 and edgar_max_index_quarters = 4::
 
         _quarters_for_since(date(2026, 1, 1))  → [(2026, 1)]
         _quarters_for_since(date(2025, 10, 1)) → [(2025, 4), (2026, 1)]
         _quarters_for_since(date(2020, 1, 1))  → [(2025, 2), (2025, 3), (2025, 4), (2026, 1)]
     """
+    max_quarters = get_settings().edgar_max_index_quarters
     today = date.today()
 
     def _qi(d: date) -> int:
@@ -452,7 +459,18 @@ def _quarters_for_since(since_date: date) -> list[tuple[int, int]]:
         return d.year * 4 + (d.month - 1) // 3
 
     end_qi = _qi(today)
-    start_qi = max(_qi(since_date), end_qi - _MAX_INDEX_QUARTERS + 1)
+    since_qi = _qi(since_date)
+    start_qi = max(since_qi, end_qi - max_quarters + 1)
+
+    if since_qi < start_qi:
+        logger.warning(
+            "_quarters_for_since: since_date %s is older than the %d-quarter scan "
+            "window; only the most-recent %d quarters will be checked. "
+            "Set EDGAR_MAX_INDEX_QUARTERS to a larger value for complete backfills.",
+            since_date,
+            max_quarters,
+            max_quarters,
+        )
 
     quarters: list[tuple[int, int]] = []
     for qi in range(start_qi, end_qi + 1):
@@ -487,11 +505,16 @@ def fetch_filings_from_index(
         --------------------------------------------------------------------------------
         320193|Apple Inc.|10-K|2024-02-02|edgar/data/320193/0000320193-24-000006.txt
     """
+    index_base = get_settings().edgar_full_index_base
     filing_types_set = set(filing_types)
     matching_ciks: set[str] = set()
 
+    # Track outcomes so we can detect when every quarter failed.
+    hard_failure_count: int = 0  # network errors and bad zips
+    success_count: int = 0  # quarters that responded and were parseable
+
     for year, quarter in _quarters_for_since(since_date):
-        url = f"{_EDGAR_FULL_INDEX_BASE}/{year}/QTR{quarter}/master.zip"
+        url = f"{index_base}/{year}/QTR{quarter}/master.zip"
         logger.info("Fetching EDGAR quarterly index %d Q%d", year, quarter)
         try:
             time.sleep(REQUEST_DELAY)
@@ -503,10 +526,11 @@ def fetch_filings_from_index(
                     year,
                     quarter,
                 )
-                continue
+                continue  # 404 is not a hard failure — quarter just not published yet
             raise
         except httpx.HTTPError as exc:
             logger.warning("Failed to fetch EDGAR quarterly index %d Q%d: %s", year, quarter, exc)
+            hard_failure_count += 1
             continue
 
         try:
@@ -537,9 +561,20 @@ def fetch_filings_from_index(
                         if filed < since_date:
                             continue
                         matching_ciks.add(cik_raw.strip().zfill(10))
+            success_count += 1
         except (zipfile.BadZipFile, KeyError) as exc:
             logger.warning("Could not parse EDGAR quarterly index %d Q%d: %s", year, quarter, exc)
+            hard_failure_count += 1
             continue
+
+    # If every quarter we attempted to fetch produced a hard failure (network
+    # error or corrupt zip), raise so the caller's fallback logic can activate
+    # instead of silently treating the empty set as "no new filings".
+    if hard_failure_count > 0 and success_count == 0:
+        raise RuntimeError(
+            f"All {hard_failure_count} EDGAR quarterly index fetches failed "
+            "(network errors or corrupt archives); falling back to per-entity API calls"
+        )
 
     logger.info(
         "EDGAR quarterly index scan complete: %d CIKs with matching filings",

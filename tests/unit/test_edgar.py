@@ -1294,6 +1294,18 @@ class TestQuartersForSince:
             # Convert to a comparable linear quarter index
             assert curr_y * 4 + curr_q == prev_y * 4 + prev_q + 1
 
+    def test_old_since_date_logs_warning(self, caplog):
+        """A since_date older than the scan window must emit a warning."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="cam.ingestion.edgar"):
+            _quarters_for_since(date(2010, 1, 1))
+
+        assert any(
+            "older than" in record.message and "EDGAR_MAX_INDEX_QUARTERS" in record.message
+            for record in caplog.records
+        )
+
 
 # ===========================================================================
 # fetch_filings_from_index
@@ -1363,8 +1375,9 @@ class TestFetchFilingsFromIndex:
 
         assert ciks == set()
 
-    def test_handles_corrupt_zip_gracefully(self):
-        """A corrupt/truncated zip response must be skipped, not raised."""
+    def test_all_quarters_corrupt_zip_raises(self):
+        """When every quarterly index has a corrupt zip, RuntimeError is raised so
+        ingest_all_10k's fallback can activate instead of silently returning []."""
         bad_resp = MagicMock(spec=httpx.Response)
         bad_resp.status_code = 200
         bad_resp.content = b"not a zip"
@@ -1373,9 +1386,8 @@ class TestFetchFilingsFromIndex:
         client.get.return_value = bad_resp
 
         with patch("cam.ingestion.edgar.time"):
-            ciks = fetch_filings_from_index(date(2026, 1, 1), ["10-K"], client=client)
-
-        assert ciks == set()
+            with pytest.raises(RuntimeError, match="quarterly index fetches failed"):
+                fetch_filings_from_index(date(2026, 1, 1), ["10-K"], client=client)
 
     def test_multiple_ciks_from_same_index(self):
         """Multiple distinct CIKs in one index file should all be returned."""
@@ -1400,6 +1412,15 @@ class TestFetchFilingsFromIndex:
 
         assert "0000111111" in ciks
         assert "0000222222" in ciks
+
+    def test_all_quarters_network_error_raises(self):
+        """When every quarter fails with a network error, RuntimeError is raised."""
+        client = MagicMock(spec=httpx.Client)
+        client.get.side_effect = httpx.NetworkError("connection reset")
+
+        with patch("cam.ingestion.edgar.time"):
+            with pytest.raises(RuntimeError, match="quarterly index fetches failed"):
+                fetch_filings_from_index(date(2026, 1, 1), ["10-K"], client=client)
 
     def test_empty_index_returns_empty_set(self):
         zip_resp = _make_empty_index_zip_response()

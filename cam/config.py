@@ -63,6 +63,20 @@ class Settings(BaseSettings):
         description="URL for the ECHO bulk enforcement download zip (updated daily)",
     )
 
+    # EDGAR ingestion (M2)
+    edgar_full_index_base: str = Field(
+        default="https://www.sec.gov/Archives/edgar/full-index",
+        description="Base URL for EDGAR quarterly full-index master.zip files",
+    )
+    edgar_max_index_quarters: int = Field(
+        default=4,
+        description=(
+            "Maximum quarterly index files to scan per ingest run. "
+            "Increase for backfills (each extra quarter adds one HTTP call). "
+            "Default 4 covers ~1 year and bounds daily/weekly runs."
+        ),
+    )
+
     # Alert thresholds
     alert_threshold_watch: float = Field(default=0.40)
     alert_threshold_elevated: float = Field(default=0.65)
