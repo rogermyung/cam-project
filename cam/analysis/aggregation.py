@@ -15,8 +15,8 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from cam.config import Settings
-from cam.db.models import Entity, Event
+from cam.config import Settings, get_settings
+from cam.db.models import Entity, Event, Signal
 from cam.ingestion.cfpb import compute_complaint_rate, detect_complaint_spike
 
 logger = logging.getLogger(__name__)
@@ -299,3 +299,92 @@ def compute_agency_summary(
         agency_overlap_count=active_agencies,
         composite_risk_score=composite_risk_score,
     )
+
+
+# ---------------------------------------------------------------------------
+# Signal persistence
+# ---------------------------------------------------------------------------
+
+
+def write_cross_agency_signals(
+    *,
+    db: Session,
+    score_date: date,
+    entity_ids: list[UUID] | None = None,
+    lookback_days: int | None = None,
+) -> int:
+    """Compute the cross-agency composite for each entity and persist it to the
+    ``signals`` table as ``signal_type="cross_agency_composite"``.
+
+    This is the bridge between the M6 analysis layer and the M13 scorer: the
+    scorer reads ``Signal`` rows to find which entities to score and what their
+    component-level risk scores are.
+
+    Parameters
+    ----------
+    db:
+        SQLAlchemy session.
+    score_date:
+        Date to record on each ``Signal`` row (``signal_date``).
+    entity_ids:
+        Specific entities to process.  ``None`` processes every entity that
+        has at least one event in the DB.
+    lookback_days:
+        Passed through to :func:`compute_agency_summary`.  ``None`` reads
+        ``Settings.aggregation_lookback_days`` (default 365).
+
+    Returns
+    -------
+    Number of ``Signal`` rows written.
+    """
+    import uuid as _uuid
+
+    if lookback_days is None:
+        lookback_days = get_settings().aggregation_lookback_days
+
+    if entity_ids is None:
+        # Process all entities that have at least one event.
+        entity_ids = list(
+            db.execute(
+                select(Event.entity_id).where(Event.entity_id.isnot(None)).distinct()
+            ).scalars()
+        )
+
+    written = 0
+    for eid in entity_ids:
+        # Use a savepoint so a DB error for one entity doesn't invalidate the
+        # whole session (same pattern as run_daily_scoring in M13).
+        try:
+            with db.begin_nested():
+                summary = compute_agency_summary(
+                    eid, period_end=score_date, lookback_days=lookback_days, db=db
+                )
+                evidence = (
+                    f"osha_violations={summary.osha_violation_count}, "
+                    f"osha_penalty={summary.osha_penalty_total:.0f}, "
+                    f"epa_violations={summary.epa_violation_count}, "
+                    f"epa_penalty={summary.epa_penalty_total:.0f}, "
+                    f"cfpb_spike={summary.cfpb_spike_detected}, "
+                    f"active_agencies={summary.agency_overlap_count}"
+                )
+                sig = Signal(
+                    id=_uuid.uuid4(),
+                    entity_id=eid,
+                    source="aggregation_m6",
+                    signal_type="cross_agency_composite",
+                    signal_date=score_date,
+                    score=summary.composite_risk_score,
+                    evidence=evidence,
+                )
+                db.add(sig)
+            written += 1
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to write cross_agency_composite signal for entity %s", eid)
+
+    db.flush()
+    logger.info(
+        "write_cross_agency_signals: wrote %d cross_agency_composite signals for %s",
+        written,
+        score_date,
+    )
+    return written
