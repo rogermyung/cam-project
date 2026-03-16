@@ -4,8 +4,18 @@ State-by-state WARN Act data source configuration.
 Each StateConfig specifies the URL, format ("csv", "html", "pdf"), and
 column-name mappings used when parsing that state's WARN notice list.
 
-This file is intentionally maintained manually — state labour department
-URLs change frequently and require human verification.
+Design note — why these URLs are NOT in ``cam.config.Settings``
+----------------------------------------------------------------
+``cam.config.Settings`` holds environment-specific overrides (database
+credentials, API keys, numeric thresholds) that may differ between dev,
+staging, and production deployments.  The state URLs here are static
+reference data: they are identical across all environments and must be
+updated only after human review of state labour department websites.
+Placing them in Settings would require dozens of environment variables
+with no operational benefit and would make accidental overrides easier.
+
+State entries are maintained manually — state labour department URLs
+change frequently and require human verification before updating.
 """
 
 from __future__ import annotations

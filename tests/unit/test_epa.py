@@ -127,6 +127,18 @@ def _make_echo_zip_response(cases: list[dict], status_code: int = 200) -> MagicM
     return resp
 
 
+def _make_http_error_response(status_code: int) -> MagicMock:
+    """Build a mock response whose raise_for_status() raises HTTPStatusError."""
+    req = httpx.Request("GET", "https://echo.epa.gov/files/echodownloads/case_downloads.zip")
+    real_resp = httpx.Response(status_code, request=req)
+    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp.status_code = status_code
+    mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+        f"HTTP {status_code}", request=req, response=real_resp
+    )
+    return mock_resp
+
+
 def _make_response(data, status_code: int = 200) -> MagicMock:
     resp = MagicMock(spec=httpx.Response)
     resp.status_code = status_code
@@ -531,6 +543,39 @@ class TestIngestEchoViolations:
 
         result = ingest_echo_violations(date(2022, 1, 1), db=db, client=client)
         assert result.ingested == 0
+
+    def test_http_404_returns_empty(self, db):
+        """A 404 from the ECHO bulk zip endpoint is treated as 'not published yet'."""
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = _make_http_error_response(404)
+
+        result = ingest_echo_violations(date(2022, 1, 1), db=db, client=client)
+        assert result.ingested == 0
+        assert result.total == 0
+
+    def test_http_410_returns_empty(self, db):
+        """A 410 (Gone) is also treated as a benign 'not available' condition."""
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = _make_http_error_response(410)
+
+        result = ingest_echo_violations(date(2022, 1, 1), db=db, client=client)
+        assert result.ingested == 0
+
+    def test_http_500_raises(self, db):
+        """A 500 from the ECHO endpoint must propagate — not silently return []."""
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = _make_http_error_response(500)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            ingest_echo_violations(date(2022, 1, 1), db=db, client=client)
+
+    def test_http_403_raises(self, db):
+        """A 403 (e.g. WAF block) must propagate as a hard failure."""
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = _make_http_error_response(403)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            ingest_echo_violations(date(2022, 1, 1), db=db, client=client)
 
     def test_unexpected_api_response_returns_zero(self, db):
         client = MagicMock(spec=httpx.Client)

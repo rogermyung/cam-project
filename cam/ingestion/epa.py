@@ -48,8 +48,15 @@ _TRI_BULK_BASE = "https://www.epa.gov/sites/default/files/tri"
 # ECHO enforcement bulk download — updated daily, contains CASE_ENFORCEMENTS.csv.
 # The old /api/case/download REST endpoint was decommissioned; this zip is the
 # current replacement: https://echo.epa.gov/files/echodownloads/
-_ECHO_BULK_ZIP_URL = "https://echo.epa.gov/files/echodownloads/case_downloads.zip"
+# URL is configured via cam.config Settings (echo_bulk_zip_url) to allow
+# environment-specific overrides.
 _ECHO_CASE_CSV_NAME = "CASE_ENFORCEMENTS.csv"
+
+# HTTP status codes that indicate the ECHO bulk zip genuinely does not exist
+# (e.g. the archive hasn't been published yet).  All other non-2xx statuses
+# are re-raised so that upstream outages surface as hard failures rather than
+# silently producing 0-record ingestions.
+_ECHO_ACCEPTABLE_MISSING_STATUSES = frozenset({404, 410})
 
 # TRI column names (the real TRI CSV uses fixed positional columns)
 _TRI_FACILITY_NAME_COL = "FACILITY_NAME"
@@ -320,20 +327,31 @@ def _fetch_echo_cases(
     """Fetch enforcement cases from the ECHO bulk download (updated daily).
 
     The old /api/case/download REST endpoint was decommissioned.  The current
-    source is a zip archive at ``_ECHO_BULK_ZIP_URL`` containing
-    ``CASE_ENFORCEMENTS.csv``.  We download the full archive, extract the CSV
-    in-memory, and filter rows to those with action_date >= since_date so the
-    return contract matches the old API behaviour.
+    source is a zip archive whose URL is configured via
+    ``Settings.echo_bulk_zip_url`` and contains ``CASE_ENFORCEMENTS.csv``.
+    We download the full archive, extract the CSV in-memory, and filter rows
+    to those with action_date >= since_date so the return contract matches the
+    old API behaviour.
+
+    Raises
+    ------
+    httpx.HTTPStatusError
+        For any non-2xx response other than 404/410 (resource missing), so
+        that upstream outages surface as hard failures instead of silent 0-
+        record ingestions.
     """
-    logger.info("Downloading ECHO bulk enforcement zip from %s", _ECHO_BULK_ZIP_URL)
+    from cam.config import get_settings
+
+    url = get_settings().echo_bulk_zip_url
+    logger.info("Downloading ECHO bulk enforcement zip from %s", url)
     try:
-        resp = _get(_ECHO_BULK_ZIP_URL, client=client)
+        resp = _get(url, client=client)
     except httpx.HTTPStatusError as exc:
-        logger.warning(
-            "ECHO bulk zip returned %d — returning empty",
-            exc.response.status_code,
-        )
-        return []
+        sc = exc.response.status_code
+        if sc in _ECHO_ACCEPTABLE_MISSING_STATUSES:
+            logger.warning("ECHO bulk zip returned %d — returning empty", sc)
+            return []
+        raise
 
     try:
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:

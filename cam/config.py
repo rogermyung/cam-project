@@ -57,6 +57,12 @@ class Settings(BaseSettings):
         default=60, description="HTTP timeout in seconds for WARN state fetches"
     )
 
+    # EPA ECHO ingestion (M4)
+    echo_bulk_zip_url: str = Field(
+        default="https://echo.epa.gov/files/echodownloads/case_downloads.zip",
+        description="URL for the ECHO bulk enforcement download zip (updated daily)",
+    )
+
     # Alert thresholds
     alert_threshold_watch: float = Field(default=0.40)
     alert_threshold_elevated: float = Field(default=0.65)
