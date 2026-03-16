@@ -114,12 +114,24 @@ def _get(
 
 
 def _parse_date(value: str | None) -> date | None:
-    """Parse YYYY-MM-DD complaint date strings."""
+    """Parse CFPB complaint date strings.
+
+    Handles multiple formats returned by the API over time:
+    - "YYYY-MM-DD"                   (legacy plain date)
+    - "MM/DD/YYYY"                   (legacy US format)
+    - "YYYY-MM-DDTHH:MM:SS±HH:MM"   (ISO 8601 with timezone offset, current API)
+    """
     from datetime import datetime
 
     value = (value or "").strip()
     if not value:
         return None
+    # Try ISO 8601 fromisoformat first — handles both plain dates and
+    # timezone-aware datetimes like "2026-03-14T12:00:00-05:00".
+    try:
+        return datetime.fromisoformat(value).date()
+    except ValueError:
+        pass
     for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
         try:
             return datetime.strptime(value, fmt).date()

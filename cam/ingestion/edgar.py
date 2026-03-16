@@ -10,8 +10,10 @@ Rate limit: 10 requests/second per EDGAR fair-access policy.
 
 from __future__ import annotations
 
+import io
 import logging
 import time
+import zipfile
 from dataclasses import dataclass, field
 from datetime import date
 from html.parser import HTMLParser
@@ -35,6 +37,8 @@ _EDGAR_SUBMISSIONS_BASE = "https://data.sec.gov/submissions"
 _EDGAR_COMPANY_TICKERS = "https://data.sec.gov/files/company_tickers.json"
 _EDGAR_ARCHIVES_BASE = "https://www.sec.gov/Archives/edgar/data"
 _EDGAR_XBRL_BASE = "https://data.sec.gov/api/xbrl/companyfacts"
+# _EDGAR_FULL_INDEX_BASE is now configured via cam.config Settings
+# (edgar_full_index_base) to allow environment-specific overrides.
 
 # Key US-GAAP concepts to extract from the companyfacts endpoint.
 _XBRL_KEY_CONCEPTS = ("Revenues", "Assets", "NetIncomeLoss", "StockholdersEquity")
@@ -42,6 +46,11 @@ _XBRL_KEY_CONCEPTS = ("Revenues", "Assets", "NetIncomeLoss", "StockholdersEquity
 # Seconds between requests to stay within EDGAR's 10 req/s limit.
 # Tests override this via monkeypatch on cam.ingestion.edgar.REQUEST_DELAY.
 REQUEST_DELAY: float = 0.1
+
+# Maximum number of quarterly index files to scan when pre-filtering entities.
+# 4 quarters ≈ 1 year; covers the typical daily/weekly ingest window and bounds
+# the HTTP call count at O(4) regardless of how far back since_date reaches.
+_MAX_INDEX_QUARTERS: int = 4
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +432,157 @@ def download_filing(
     return FilingDocument(metadata=filing_metadata, text=text, object_store_path=key)
 
 
+def _quarters_for_since(since_date: date) -> list[tuple[int, int]]:
+    """Return ``(year, quarter)`` pairs from *since_date* through today.
+
+    Capped at ``Settings.edgar_max_index_quarters`` quarters (default 4) so
+    the index scan always costs a bounded number of HTTP calls, even when
+    *since_date* is years in the past.
+
+    When *since_date* falls before the scan window a warning is logged so
+    that operators know the backfill may be incomplete.  Increase
+    ``EDGAR_MAX_INDEX_QUARTERS`` (env var) to widen the scan window.
+
+    Examples
+    --------
+    With today = 2026-03-15 and edgar_max_index_quarters = 4::
+
+        _quarters_for_since(date(2026, 1, 1))  → [(2026, 1)]
+        _quarters_for_since(date(2025, 10, 1)) → [(2025, 4), (2026, 1)]
+        _quarters_for_since(date(2020, 1, 1))  → [(2025, 2), (2025, 3), (2025, 4), (2026, 1)]
+    """
+    max_quarters = get_settings().edgar_max_index_quarters
+    today = date.today()
+
+    def _qi(d: date) -> int:
+        """Comparable integer: year*4 + zero-based quarter (0-3)."""
+        return d.year * 4 + (d.month - 1) // 3
+
+    end_qi = _qi(today)
+    since_qi = _qi(since_date)
+    start_qi = max(since_qi, end_qi - max_quarters + 1)
+
+    if since_qi < start_qi:
+        logger.warning(
+            "_quarters_for_since: since_date %s is older than the %d-quarter scan "
+            "window; only the most-recent %d quarters will be checked. "
+            "Set EDGAR_MAX_INDEX_QUARTERS to a larger value for complete backfills.",
+            since_date,
+            max_quarters,
+            max_quarters,
+        )
+
+    quarters: list[tuple[int, int]] = []
+    for qi in range(start_qi, end_qi + 1):
+        year, q0 = divmod(qi, 4)
+        quarters.append((year, q0 + 1))
+    return quarters
+
+
+def fetch_filings_from_index(
+    since_date: date,
+    filing_types: list[str],
+    *,
+    client: httpx.Client | None = None,
+) -> set[str]:
+    """Download quarterly master.zip index files; return zero-padded CIKs with new filings.
+
+    Returns a set of 10-digit zero-padded CIK strings for companies that have
+    at least one filing of *filing_types* on or after *since_date*, based on
+    the EDGAR full-index quarterly files.
+
+    Used as a pre-filter in ``ingest_all_10k``: entities whose CIK is **not**
+    in the returned set have no new filings and can be skipped entirely,
+    reducing HTTP calls from O(N_entities × 3) to O(Q_quarters + N_new_filers × 2).
+
+    The quarterly index URL format::
+
+        https://www.sec.gov/Archives/edgar/full-index/{year}/QTR{q}/master.zip
+
+    The ``master.zip`` contains ``master.idx``, a pipe-delimited file::
+
+        CIK|Company Name|Form Type|Date Filed|Filename
+        --------------------------------------------------------------------------------
+        320193|Apple Inc.|10-K|2024-02-02|edgar/data/320193/0000320193-24-000006.txt
+    """
+    index_base = get_settings().edgar_full_index_base
+    filing_types_set = set(filing_types)
+    matching_ciks: set[str] = set()
+
+    # Track outcomes so we can detect when every quarter failed.
+    hard_failure_count: int = 0  # network errors and bad zips
+    success_count: int = 0  # quarters that responded and were parseable
+
+    for year, quarter in _quarters_for_since(since_date):
+        url = f"{index_base}/{year}/QTR{quarter}/master.zip"
+        logger.info("Fetching EDGAR quarterly index %d Q%d", year, quarter)
+        try:
+            time.sleep(REQUEST_DELAY)
+            resp = _get(url, client=client)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                logger.warning(
+                    "EDGAR quarterly index %d Q%d not yet published (404), skipping",
+                    year,
+                    quarter,
+                )
+                continue  # 404 is not a hard failure — quarter just not published yet
+            raise
+        except httpx.HTTPError as exc:
+            logger.warning("Failed to fetch EDGAR quarterly index %d Q%d: %s", year, quarter, exc)
+            hard_failure_count += 1
+            continue
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                with zf.open("master.idx") as fh:
+                    text_fh = io.TextIOWrapper(fh, encoding="utf-8", errors="replace")
+                    # Skip preamble/header lines up to and including the "---" separator
+                    for line in text_fh:
+                        if line.startswith("---"):
+                            break
+                    # Parse pipe-delimited data rows
+                    for line in text_fh:
+                        parts = line.rstrip("\n").split("|")
+                        if len(parts) < 4:
+                            continue
+                        cik_raw, _company, form_type, filed_str = (
+                            parts[0],
+                            parts[1],
+                            parts[2],
+                            parts[3],
+                        )
+                        if form_type not in filing_types_set:
+                            continue
+                        try:
+                            filed = date.fromisoformat(filed_str)
+                        except (ValueError, TypeError):
+                            continue
+                        if filed < since_date:
+                            continue
+                        matching_ciks.add(cik_raw.strip().zfill(10))
+            success_count += 1
+        except (zipfile.BadZipFile, KeyError) as exc:
+            logger.warning("Could not parse EDGAR quarterly index %d Q%d: %s", year, quarter, exc)
+            hard_failure_count += 1
+            continue
+
+    # If every quarter we attempted to fetch produced a hard failure (network
+    # error or corrupt zip), raise so the caller's fallback logic can activate
+    # instead of silently treating the empty set as "no new filings".
+    if hard_failure_count > 0 and success_count == 0:
+        raise RuntimeError(
+            f"All {hard_failure_count} EDGAR quarterly index fetches failed "
+            "(network errors or corrupt archives); falling back to per-entity API calls"
+        )
+
+    logger.info(
+        "EDGAR quarterly index scan complete: %d CIKs with matching filings",
+        len(matching_ciks),
+    )
+    return matching_ciks
+
+
 def ingest_all_10k(
     since_date: date,
     entity_ids: list[UUID] | None = None,
@@ -439,6 +599,20 @@ def ingest_all_10k(
     rows with a non-null ticker, resolves each ticker to a CIK, optionally
     fetches XBRL financial facts, downloads each matching filing, and writes
     an Event row.  Already-ingested filings are skipped (idempotent).
+
+    Performance optimisation (bulk approach):
+
+    1. Fetch ``company_tickers.json`` **once** to build a full ticker→CIK map
+       (O(1) HTTP call instead of one call per entity).
+    2. Download quarterly ``master.zip`` index files to pre-filter which CIKs
+       have new filings (O(_MAX_INDEX_QUARTERS) calls, typically 1–2 for daily
+       runs).  Entities whose CIK is absent from the index are skipped without
+       any further HTTP calls.
+    3. For each entity *with* new filings: fetch XBRL facts (optional),
+       ``fetch_company_filings`` for the primary_document name, then download.
+
+    This reduces HTTP calls from O(N_entities × 3) to
+    O(1 + Q_quarters + N_new_filers × 2–3).
 
     Args:
         since_date: Only process filings filed on or after this date.
@@ -468,13 +642,32 @@ def ingest_all_10k(
 
     entities = db.execute(stmt).scalars().all()
 
+    if not entities:
+        return result
+
+    # ------------------------------------------------------------------
+    # Step 1: Resolve all tickers → CIKs with a single HTTP call.
+    # ------------------------------------------------------------------
+    try:
+        time.sleep(REQUEST_DELAY)
+        tickers_resp = _get(_EDGAR_COMPANY_TICKERS, client=client)
+        tickers_data: dict = tickers_resp.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.error("Failed to fetch company tickers: %s", exc)
+        tickers_data = {}
+
+    ticker_to_cik: dict[str, str] = {
+        str(entry.get("ticker") or "").upper(): str(entry["cik_str"]).zfill(10)
+        for entry in tickers_data.values()
+        if entry.get("ticker") and entry.get("cik_str")
+    }
+
+    # Build (entity, cik) pairs — no HTTP.
+    entity_cik_pairs: list[tuple] = []
     for entity in entities:
         if not entity.ticker:
             continue
-
-        # Resolve ticker → CIK
-        time.sleep(REQUEST_DELAY)
-        cik = get_cik_for_ticker(entity.ticker, client=client)
+        cik = ticker_to_cik.get(entity.ticker.upper())
         if not cik:
             logger.warning(
                 "Could not resolve CIK for ticker %s (entity %s)",
@@ -484,6 +677,37 @@ def ingest_all_10k(
             result.errors += 1
             result.error_details.append(f"No CIK for ticker {entity.ticker}")
             continue
+        entity_cik_pairs.append((entity, cik))
+
+    if not entity_cik_pairs:
+        return result
+
+    # ------------------------------------------------------------------
+    # Step 2: Pre-filter via quarterly index — O(_MAX_INDEX_QUARTERS) calls.
+    # Entities whose CIK is absent have no new filings; skip them entirely.
+    # ------------------------------------------------------------------
+    try:
+        index_ciks = fetch_filings_from_index(since_date, filing_types, client=client)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Quarterly index fetch failed (%s) — falling back to per-entity API calls",
+            exc,
+        )
+        # Fallback: assume every entity may have new filings.
+        index_ciks = {cik for _, cik in entity_cik_pairs}
+
+    # ------------------------------------------------------------------
+    # Step 3: For each entity in the index, fetch metadata + download.
+    # ------------------------------------------------------------------
+    for entity, cik in entity_cik_pairs:
+        if cik not in index_ciks:
+            logger.debug(
+                "Skipping entity %s (ticker %s, CIK %s): not in quarterly index",
+                entity.id,
+                entity.ticker,
+                cik,
+            )
+            continue
 
         # Optionally fetch XBRL financial facts once per entity/CIK
         xbrl_facts: dict | None = None
@@ -491,7 +715,7 @@ def ingest_all_10k(
             time.sleep(REQUEST_DELAY)
             xbrl_facts = fetch_xbrl_facts(cik, client=client)
 
-        # Fetch filing metadata
+        # Fetch filing metadata (provides primary_document name)
         try:
             time.sleep(REQUEST_DELAY)
             filings = fetch_company_filings(cik, filing_types, since_date, client=client)

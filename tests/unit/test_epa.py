@@ -7,10 +7,12 @@ Uses SQLite in-memory DB for event persistence tests.
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import time
 import uuid
+import zipfile
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -73,6 +75,68 @@ def _seed_event(db, entity_id, source, event_type, event_date, penalty=None, raw
     db.add(ev)
     db.commit()
     return ev
+
+
+def _make_echo_zip_response(cases: list[dict], status_code: int = 200) -> MagicMock:
+    """Build a mock httpx.Response whose .content is a zip containing CASE_ENFORCEMENTS.csv.
+
+    Column names are the uppercase bulk-export format the new _fetch_echo_cases
+    implementation expects (ACTIVITY_ID, FAC_NAME, ACTIVITY_DATE, etc.).
+    """
+    fieldnames = [
+        "ACTIVITY_ID",
+        "FAC_NAME",
+        "ACTIVITY_DATE",
+        "PENALTY_ASSESSED_AMT",
+        "ACTIVITY_TYPE_DESC",
+        "CASE_NUMBER",
+        "FRS_ID",
+        "NAICS_CODE",
+        "LAW_SECTION",
+        "VIOLATION_TYPE",
+    ]
+    buf = io.StringIO()
+    writer = __import__("csv").DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for c in cases:
+        writer.writerow(
+            {
+                "ACTIVITY_ID": c.get("activity_id", ""),
+                "FAC_NAME": c.get("facility_name", ""),
+                "ACTIVITY_DATE": c.get("action_date", ""),
+                "PENALTY_ASSESSED_AMT": c.get("penalty_assessed", ""),
+                "ACTIVITY_TYPE_DESC": c.get("description", ""),
+                "CASE_NUMBER": c.get("case_number", ""),
+                "FRS_ID": c.get("frs_id", ""),
+                "NAICS_CODE": c.get("naics_code", ""),
+                "LAW_SECTION": c.get("law_section", ""),
+                "VIOLATION_TYPE": c.get("violation_type", ""),
+            }
+        )
+    csv_bytes = buf.getvalue().encode("utf-8")
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("CASE_ENFORCEMENTS.csv", csv_bytes)
+    zip_bytes = zip_buf.getvalue()
+
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = status_code
+    resp.content = zip_bytes
+    resp.raise_for_status.return_value = None
+    return resp
+
+
+def _make_http_error_response(status_code: int) -> MagicMock:
+    """Build a mock response whose raise_for_status() raises HTTPStatusError."""
+    req = httpx.Request("GET", "https://echo.epa.gov/files/echodownloads/case_downloads.zip")
+    real_resp = httpx.Response(status_code, request=req)
+    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp.status_code = status_code
+    mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+        f"HTTP {status_code}", request=req, response=real_resp
+    )
+    return mock_resp
 
 
 def _make_response(data, status_code: int = 200) -> MagicMock:
@@ -458,25 +522,60 @@ class TestIngestEchoViolations:
         activity_ids = {e.raw_json["activity_id"] for e in events}
         assert "ECHO-CAA-003" not in activity_ids
 
-    def test_fetches_from_api_when_cases_not_provided(self, db):
+    def test_fetches_from_bulk_zip_when_cases_not_provided(self, db):
+        """_fetch_echo_cases downloads the bulk zip and filters by since_date."""
         cases = _load_echo_fixture()
-        wrapped = {"Results": {"CaseList": cases}}
         client = MagicMock(spec=httpx.Client)
-        client.get.return_value = _make_response(wrapped)
+        client.get.return_value = _make_echo_zip_response(cases)
 
         # since_date=2022-01-01 excludes ECHO-CAA-003 (action_date 2021-07-19)
         result = ingest_echo_violations(date(2022, 1, 1), db=db, client=client)
         assert result.ingested == 7
 
-    def test_api_list_response_handled(self, db):
-        """ECHO API may return a bare list instead of wrapped dict."""
-        cases = _load_echo_fixture()
+    def test_bad_zip_returns_zero(self, db):
+        """Corrupt zip content is handled gracefully — returns 0 ingested."""
         client = MagicMock(spec=httpx.Client)
-        client.get.return_value = _make_response(cases)
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.content = b"not a zip file"
+        resp.raise_for_status.return_value = None
+        client.get.return_value = resp
 
-        # since_date=2022-01-01 excludes ECHO-CAA-003 (action_date 2021-07-19)
         result = ingest_echo_violations(date(2022, 1, 1), db=db, client=client)
-        assert result.ingested == 7
+        assert result.ingested == 0
+
+    def test_http_404_returns_empty(self, db):
+        """A 404 from the ECHO bulk zip endpoint is treated as 'not published yet'."""
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = _make_http_error_response(404)
+
+        result = ingest_echo_violations(date(2022, 1, 1), db=db, client=client)
+        assert result.ingested == 0
+        assert result.total == 0
+
+    def test_http_410_returns_empty(self, db):
+        """A 410 (Gone) is also treated as a benign 'not available' condition."""
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = _make_http_error_response(410)
+
+        result = ingest_echo_violations(date(2022, 1, 1), db=db, client=client)
+        assert result.ingested == 0
+
+    def test_http_500_raises(self, db):
+        """A 500 from the ECHO endpoint must propagate — not silently return []."""
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = _make_http_error_response(500)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            ingest_echo_violations(date(2022, 1, 1), db=db, client=client)
+
+    def test_http_403_raises(self, db):
+        """A 403 (e.g. WAF block) must propagate as a hard failure."""
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = _make_http_error_response(403)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            ingest_echo_violations(date(2022, 1, 1), db=db, client=client)
 
     def test_unexpected_api_response_returns_zero(self, db):
         client = MagicMock(spec=httpx.Client)

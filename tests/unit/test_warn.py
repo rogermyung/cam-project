@@ -588,6 +588,17 @@ def test_fetch_uses_client_when_provided():
     client.get.assert_called_once()
 
 
+def test_fetch_client_follows_redirects():
+    """Injected client path must pass follow_redirects=True so redirecting state
+    URLs are resolved the same way as the direct httpx.get path."""
+    from cam.ingestion.warn import _fetch
+
+    client = _make_client(b"data")
+    _fetch("https://example.com/warn.csv", client=client)
+    _, kwargs = client.get.call_args
+    assert kwargs.get("follow_redirects") is True
+
+
 # ---------------------------------------------------------------------------
 # Regression: qodo fix #2 — single commit at end of ingest batch
 # ---------------------------------------------------------------------------
