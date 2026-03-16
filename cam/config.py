@@ -46,10 +46,30 @@ class Settings(BaseSettings):
     weight_cfpb_spike: float = Field(default=0.20)
     weight_agency_overlap: float = Field(default=0.35)
 
+    # Analysis (M6)
+    aggregation_lookback_days: int = Field(
+        default=365,
+        description=(
+            "Look-back window in days for cross-agency event aggregation. "
+            "Controls how far back compute_agency_summary() and "
+            "write_cross_agency_signals() scan for events."
+        ),
+    )
+
     # Ingestion defaults
     ingest_default_since_days: int = Field(
         default=30,
         description="Default look-back window in days for ingestion when --since is not specified",
+    )
+
+    # CFPB ingestion (M5)
+    cfpb_page_size: int = Field(
+        default=1000,
+        description=(
+            "Records per page when paginating the CFPB complaints API. "
+            "1 000 is a safe sweet spot (~10× fewer round-trips than 100). "
+            "Reduce on memory-constrained runners; max accepted by API is 10 000."
+        ),
     )
 
     # WARN Act ingestion (M11)

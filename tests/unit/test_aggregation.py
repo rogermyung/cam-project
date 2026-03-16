@@ -7,6 +7,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -17,9 +18,10 @@ from cam.analysis.aggregation import (
     agency_overlap_bonus,
     compute_agency_summary,
     compute_industry_benchmarks,
+    write_cross_agency_signals,
 )
 from cam.config import Settings
-from cam.db.models import Base, Entity, Event
+from cam.db.models import Base, Entity, Event, Signal
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -390,3 +392,66 @@ def test_integration_full_summary(db):
     assert summary.osha_vs_industry_benchmark > 1.0  # worse than industry average
     assert summary.composite_risk_score > 0.0
     assert 0.0 <= summary.composite_risk_score <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# write_cross_agency_signals
+# ---------------------------------------------------------------------------
+
+
+def test_write_cross_agency_signals_persists_rows(db):
+    """Entities with events should get a cross_agency_composite Signal row."""
+    entity = _entity(db, "Acme Corp", naics_code="3311")
+    _event(db, entity.id, "osha", "violation", TODAY, penalty_usd=5000)
+
+    n = write_cross_agency_signals(db=db, score_date=TODAY)
+
+    assert n == 1
+    rows = db.query(Signal).filter_by(signal_type="cross_agency_composite").all()
+    assert len(rows) == 1
+    assert rows[0].entity_id == entity.id
+    assert rows[0].signal_date == TODAY
+    assert rows[0].source == "aggregation_m6"
+    assert 0.0 <= rows[0].score <= 1.0
+
+
+def test_write_cross_agency_signals_uses_settings_lookback_days(db):
+    """lookback_days=None should read from Settings (default 365)."""
+    entity = _entity(db, "Beta Ltd")
+    _event(db, entity.id, "osha", "violation", TODAY, penalty_usd=1000)
+
+    with patch("cam.analysis.aggregation.get_settings") as mock_settings:
+        mock_settings.return_value.aggregation_lookback_days = 180
+        n = write_cross_agency_signals(db=db, score_date=TODAY)
+
+    assert n == 1
+
+
+def test_write_cross_agency_signals_skips_failed_entity(db):
+    """A per-entity exception must not abort signals for other entities."""
+    good = _entity(db, "Good Corp")
+    bad = _entity(db, "Bad Corp")
+    _event(db, good.id, "osha", "violation", TODAY, penalty_usd=1000)
+    _event(db, bad.id, "osha", "violation", TODAY, penalty_usd=1000)
+
+    original = compute_agency_summary
+
+    def boom(entity_id, **kwargs):
+        if entity_id == bad.id:
+            raise RuntimeError("simulated DB failure")
+        return original(entity_id, **kwargs)
+
+    with patch("cam.analysis.aggregation.compute_agency_summary", side_effect=boom):
+        n = write_cross_agency_signals(db=db, score_date=TODAY, entity_ids=[bad.id, good.id])
+
+    # Only the good entity should have a signal written
+    assert n == 1
+    rows = db.query(Signal).filter_by(signal_type="cross_agency_composite").all()
+    assert len(rows) == 1
+    assert rows[0].entity_id == good.id
+
+
+def test_write_cross_agency_signals_no_entities_returns_zero(db):
+    """With no entities in the DB, function should return 0 without error."""
+    n = write_cross_agency_signals(db=db, score_date=TODAY)
+    assert n == 0

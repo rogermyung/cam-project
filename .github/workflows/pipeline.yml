@@ -38,6 +38,7 @@ on:
         options:
           - ""
           - ingest
+          - analyze
           - score
           - export
         default: ""
@@ -108,13 +109,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: ingest
     # Run if ingest succeeded, failed (partial source failure), or was skipped.
-    # Score/export will still run on whatever signals are in the DB.
+    # Also runs standalone when step == 'analyze' (operators can repair signals
+    # without re-running ingest).  When step == 'score', analyze runs first so
+    # the scorer always has fresh signals to work with.
     if: >-
       always() &&
       needs.ingest.result != 'cancelled' &&
       (
         github.event_name == 'schedule' ||
         github.event.inputs.step == '' ||
+        github.event.inputs.step == 'analyze' ||
         github.event.inputs.step == 'score'
       )
 
