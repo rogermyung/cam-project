@@ -8,8 +8,10 @@ Uses SQLite in-memory DB for event persistence tests.
 
 from __future__ import annotations
 
+import io
 import json
 import uuid
+import zipfile
 from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -21,6 +23,7 @@ from sqlalchemy.orm import sessionmaker
 
 from cam.db.models import Base, Entity, Event
 from cam.ingestion.edgar import (
+    _MAX_INDEX_QUARTERS,
     REQUEST_DELAY,
     FilingMetadata,
     _accession_no_dashes,
@@ -30,9 +33,11 @@ from cam.ingestion.edgar import (
     _is_retriable_error,
     _object_exists,
     _object_store_key,
+    _quarters_for_since,
     _upsert_filing_event,
     download_filing,
     fetch_company_filings,
+    fetch_filings_from_index,
     fetch_xbrl_facts,
     get_cik_for_ticker,
     ingest_all_10k,
@@ -61,6 +66,86 @@ def _make_response(data: dict | str, status_code: int = 200) -> MagicMock:
         resp.json.side_effect = ValueError("not json")
     resp.raise_for_status.return_value = None
     return resp
+
+
+def _make_quarterly_index_zip_response(
+    cik: str = "320193",
+    form_types: list[str] | None = None,
+    filed_date: str = "2026-01-15",
+) -> MagicMock:
+    """Build a mock httpx.Response containing a quarterly master.zip.
+
+    Includes an entry for *cik* (not zero-padded, as the real index uses) for
+    each of *form_types*, filed on *filed_date*.  This ensures the CIK passes
+    the ``fetch_filings_from_index`` pre-filter in ``ingest_all_10k`` tests.
+    """
+    if form_types is None:
+        form_types = ["10-K", "8-K"]
+
+    lines = ["CIK|Company Name|Form Type|Date Filed|Filename", "-" * 80]
+    for ft in form_types:
+        lines.append(f"{cik}|Test Corp|{ft}|{filed_date}|edgar/data/{cik}/test.txt")
+    content = "\n".join(lines) + "\n"
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("master.idx", content)
+
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = 200
+    resp.content = buf.getvalue()
+    resp.raise_for_status.return_value = None
+    return resp
+
+
+def _make_empty_index_zip_response() -> MagicMock:
+    """Build a mock quarterly index zip that contains no matching CIKs."""
+    content = "CIK|Company Name|Form Type|Date Filed|Filename\n" + "-" * 80 + "\n"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("master.idx", content)
+
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = 200
+    resp.content = buf.getvalue()
+    resp.raise_for_status.return_value = None
+    return resp
+
+
+def _make_edgar_client(
+    non_index_responses: list,
+    index_zip=None,
+) -> MagicMock:
+    """Mock httpx.Client that routes quarterly-index URLs to *index_zip* and
+    all other URLs to *non_index_responses* (consumed in order).
+
+    This avoids hard-coding how many quarterly quarters are downloaded, which
+    varies with the test ``since_date`` and the current date.
+
+    Parameters
+    ----------
+    non_index_responses:
+        Ordered list of responses (or exceptions) for non-index URLs.
+    index_zip:
+        Response to return for any ``/full-index/`` URL.  If ``None``, an
+        empty index zip is returned (no CIK matches → all entities skipped).
+    """
+    queue = list(non_index_responses)
+    _index_resp = index_zip if index_zip is not None else _make_empty_index_zip_response()
+
+    def _side_effect(url, **kwargs):
+        if "/full-index/" in url:
+            return _index_resp
+        if queue:
+            item = queue.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+        raise AssertionError(f"Unexpected extra call to URL: {url!r} (queue exhausted)")
+
+    client = MagicMock(spec=httpx.Client)
+    client.get.side_effect = _side_effect
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -606,15 +691,18 @@ class TestRateLimiting:
         apple_data = _load_fixture("submissions_apple.json")
         sample_text = (FIXTURES / "filing_10k_sample.txt").read_text()
 
-        client = MagicMock(spec=httpx.Client)
-        client.get.side_effect = [
-            _make_response(tickers_data),  # get_cik_for_ticker
-            _make_response(apple_data),  # fetch_company_filings
-            _make_response(sample_text),  # download filing 1
-            _make_response(sample_text),  # download filing 2
-            _make_response(sample_text),  # download filing 3
-            _make_response(sample_text),  # download filing 4
-        ]
+        index_zip = _make_quarterly_index_zip_response()
+        client = _make_edgar_client(
+            [
+                _make_response(tickers_data),  # bulk tickers fetch
+                _make_response(apple_data),  # fetch_company_filings
+                _make_response(sample_text),  # download filing 1
+                _make_response(sample_text),  # download filing 2
+                _make_response(sample_text),  # download filing 3
+                _make_response(sample_text),  # download filing 4
+            ],
+            index_zip=index_zip,
+        )
 
         with patch("cam.ingestion.edgar.time") as mock_time:
             mock_time.sleep.return_value = None
@@ -651,15 +739,17 @@ class TestIngestAll10k:
         apple_data = _load_fixture("submissions_apple.json")
         sample_text = "FORM 10-K content"
 
-        client = MagicMock(spec=httpx.Client)
-        client.get.side_effect = [
-            _make_response(tickers_data),
-            _make_response(apple_data),
-            _make_response(sample_text),
-            _make_response(sample_text),
-            _make_response(sample_text),
-            _make_response(sample_text),
-        ]
+        client = _make_edgar_client(
+            [
+                _make_response(tickers_data),  # bulk tickers fetch
+                _make_response(apple_data),  # fetch_company_filings
+                _make_response(sample_text),
+                _make_response(sample_text),
+                _make_response(sample_text),
+                _make_response(sample_text),
+            ],
+            index_zip=_make_quarterly_index_zip_response(),
+        )
 
         with patch("cam.ingestion.edgar.time") as mock_time:
             mock_time.sleep.return_value = None
@@ -683,17 +773,21 @@ class TestIngestAll10k:
         apple_data = _load_fixture("submissions_apple.json")
         sample_text = "FORM 10-K content"
 
-        def _fresh_client():
-            client = MagicMock(spec=httpx.Client)
-            client.get.side_effect = [
-                _make_response(tickers_data),
-                _make_response(apple_data),
-                _make_response(sample_text),
-                _make_response(sample_text),
-                _make_response(sample_text),
-                _make_response(sample_text),
-            ]
-            return client
+        def _fresh_client(with_downloads: bool = True):
+            downloads = (
+                [
+                    _make_response(sample_text),
+                    _make_response(sample_text),
+                    _make_response(sample_text),
+                    _make_response(sample_text),
+                ]
+                if with_downloads
+                else []
+            )
+            return _make_edgar_client(
+                [_make_response(tickers_data), _make_response(apple_data)] + downloads,
+                index_zip=_make_quarterly_index_zip_response(),
+            )
 
         with patch("cam.ingestion.edgar.time") as mock_time:
             mock_time.sleep.return_value = None
@@ -701,7 +795,7 @@ class TestIngestAll10k:
                 date(2020, 1, 1),
                 entity_ids=[sample_entity.id],
                 db=db,
-                client=_fresh_client(),
+                client=_fresh_client(with_downloads=True),
                 s3_client=_s3_no_objects(),
                 fetch_xbrl=False,
             )
@@ -712,7 +806,7 @@ class TestIngestAll10k:
                 date(2020, 1, 1),
                 entity_ids=[sample_entity.id],
                 db=db,
-                client=_fresh_client(),
+                client=_fresh_client(with_downloads=False),
                 s3_client=_s3_no_objects(),
                 fetch_xbrl=False,
             )
@@ -726,7 +820,12 @@ class TestIngestAll10k:
         assert len(events) == 4
 
     def test_handles_missing_cik_gracefully(self, db):
-        """Entity with unknown ticker is counted as error, not crash."""
+        """Entity with unknown ticker is counted as error, not crash.
+
+        With the bulk-tickers approach, the tickers JSON is fetched once; if
+        XXXX is absent, entity_cik_pairs is empty → function returns early
+        without downloading the quarterly index.
+        """
         entity = Entity(
             id=uuid.uuid4(),
             canonical_name="Ghost Corp",
@@ -736,6 +835,7 @@ class TestIngestAll10k:
         db.commit()
 
         tickers_data = _load_fixture("company_tickers.json")
+        # return_value (not side_effect) so any number of calls is fine
         client = MagicMock(spec=httpx.Client)
         client.get.return_value = _make_response(tickers_data)
 
@@ -793,15 +893,17 @@ class TestIngestAll10k:
         apple_data = _load_fixture("submissions_apple.json")
         sample_text = "10-K content"
 
-        client = MagicMock(spec=httpx.Client)
-        client.get.side_effect = [
-            _make_response(tickers_data),
-            _make_response(apple_data),
-            _make_response(sample_text),
-            _make_response(sample_text),
-            _make_response(sample_text),
-            _make_response(sample_text),
-        ]
+        client = _make_edgar_client(
+            [
+                _make_response(tickers_data),
+                _make_response(apple_data),
+                _make_response(sample_text),
+                _make_response(sample_text),
+                _make_response(sample_text),
+                _make_response(sample_text),
+            ],
+            index_zip=_make_quarterly_index_zip_response(),
+        )
 
         with patch("cam.ingestion.edgar.time") as mock_time:
             mock_time.sleep.return_value = None
@@ -822,12 +924,15 @@ class TestIngestAll10k:
         apple_data = _load_fixture("submissions_apple.json")
         sample_text = "8-K content"
 
-        client = MagicMock(spec=httpx.Client)
-        client.get.side_effect = [
-            _make_response(tickers_data),
-            _make_response(apple_data),
-            _make_response(sample_text),
-        ]
+        # Index must contain an 8-K for Apple's CIK so the pre-filter passes.
+        client = _make_edgar_client(
+            [
+                _make_response(tickers_data),
+                _make_response(apple_data),
+                _make_response(sample_text),
+            ],
+            index_zip=_make_quarterly_index_zip_response(form_types=["8-K"]),
+        )
 
         with patch("cam.ingestion.edgar.time") as mock_time:
             mock_time.sleep.return_value = None
@@ -848,15 +953,14 @@ class TestIngestAll10k:
         apple_data = _load_fixture("submissions_apple.json")
         sample_text = "10-K text"
 
-        client = MagicMock(spec=httpx.Client)
-        client.get.side_effect = [
-            _make_response(tickers_data),
-            _make_response(apple_data),
-            _make_response(sample_text),
-            _make_response(sample_text),
-            _make_response(sample_text),
-            _make_response(sample_text),
-        ]
+        client = _make_edgar_client(
+            [
+                _make_response(tickers_data),
+                _make_response(apple_data),
+                _make_response(sample_text),
+            ],
+            index_zip=_make_quarterly_index_zip_response(),
+        )
 
         with patch("cam.ingestion.edgar.time") as mock_time:
             mock_time.sleep.return_value = None
@@ -890,13 +994,15 @@ class TestIngestAll10k:
         apple_data = _load_fixture("submissions_apple.json")
         sample_text = "10-K text"
 
-        client = MagicMock(spec=httpx.Client)
-        client.get.side_effect = [
-            _make_response(tickers_data),  # get_cik_for_ticker
-            _make_response(xbrl_data),  # fetch_xbrl_facts
-            _make_response(apple_data),  # fetch_company_filings
-            _make_response(sample_text),  # download filing (only 1 since 2024-01-01)
-        ]
+        client = _make_edgar_client(
+            [
+                _make_response(tickers_data),  # bulk tickers fetch
+                _make_response(xbrl_data),  # fetch_xbrl_facts
+                _make_response(apple_data),  # fetch_company_filings
+                _make_response(sample_text),  # download filing (only 1 since 2024-01-01)
+            ],
+            index_zip=_make_quarterly_index_zip_response(),
+        )
 
         with patch("cam.ingestion.edgar.time") as mock_time:
             mock_time.sleep.return_value = None
@@ -918,16 +1024,18 @@ class TestIngestAll10k:
         tickers_data = _load_fixture("company_tickers.json")
         apple_data = _load_fixture("submissions_apple.json")
 
-        client = MagicMock(spec=httpx.Client)
-        client.get.side_effect = [
-            _make_response(tickers_data),
-            _make_response(apple_data),
-            # All filing downloads fail
-            httpx.NetworkError("connection refused"),
-            httpx.NetworkError("connection refused"),
-            httpx.NetworkError("connection refused"),
-            httpx.NetworkError("connection refused"),
-        ]
+        client = _make_edgar_client(
+            [
+                _make_response(tickers_data),
+                _make_response(apple_data),
+                # All filing downloads fail
+                httpx.NetworkError("connection refused"),
+                httpx.NetworkError("connection refused"),
+                httpx.NetworkError("connection refused"),
+                httpx.NetworkError("connection refused"),
+            ],
+            index_zip=_make_quarterly_index_zip_response(),
+        )
 
         with patch("cam.ingestion.edgar.time") as mock_time:
             mock_time.sleep.return_value = None
@@ -942,6 +1050,75 @@ class TestIngestAll10k:
 
         assert result.errors == 4
         assert result.ingested == 0
+
+    def test_entity_skipped_when_not_in_quarterly_index(self, db, sample_entity):
+        """Entities whose CIK is absent from the quarterly index incur no API calls."""
+        tickers_data = _load_fixture("company_tickers.json")
+
+        # Empty index → Apple's CIK is absent → entity skipped
+        client = _make_edgar_client(
+            [_make_response(tickers_data)],
+            index_zip=_make_empty_index_zip_response(),
+        )
+
+        with patch("cam.ingestion.edgar.time") as mock_time:
+            mock_time.sleep.return_value = None
+            result = ingest_all_10k(
+                date(2020, 1, 1),
+                entity_ids=[sample_entity.id],
+                db=db,
+                client=client,
+                s3_client=_s3_no_objects(),
+                fetch_xbrl=False,
+            )
+
+        assert result.ingested == 0
+        assert result.errors == 0
+        assert result.total == 0
+
+    def test_fallback_when_index_fetch_raises(self, db, sample_entity):
+        """If fetch_filings_from_index raises unexpectedly, all entities are processed.
+
+        ``fetch_filings_from_index`` handles HTTP errors internally and returns an
+        empty set.  This test covers the ``except Exception`` fallback path by
+        patching the function directly to raise a non-HTTP exception.
+        """
+        tickers_data = _load_fixture("company_tickers.json")
+        apple_data = _load_fixture("submissions_apple.json")
+        sample_text = "10-K content"
+
+        client = _make_edgar_client(
+            [
+                _make_response(tickers_data),
+                _make_response(apple_data),
+                _make_response(sample_text),
+                _make_response(sample_text),
+                _make_response(sample_text),
+                _make_response(sample_text),
+            ],
+            index_zip=None,  # not reached — function is patched below
+        )
+
+        with (
+            patch("cam.ingestion.edgar.time") as mock_time,
+            patch(
+                "cam.ingestion.edgar.fetch_filings_from_index",
+                side_effect=RuntimeError("index unexpectedly broken"),
+            ),
+        ):
+            mock_time.sleep.return_value = None
+            result = ingest_all_10k(
+                date(2020, 1, 1),
+                entity_ids=[sample_entity.id],
+                db=db,
+                client=client,
+                s3_client=_s3_no_objects(),
+                fetch_xbrl=False,
+            )
+
+        # Fallback kicks in → all 4 filings ingested despite index failure
+        assert result.ingested == 4
+        assert result.errors == 0
 
 
 # ===========================================================================
@@ -1056,6 +1233,183 @@ class TestHelpers:
         # is handled by _filing_in_db check in ingest_all_10k)
         events = db.execute(select(Event)).scalars().all()
         assert len(events) == 2
+
+
+# ===========================================================================
+# Performance test
+# ===========================================================================
+
+
+# ===========================================================================
+# _quarters_for_since
+# ===========================================================================
+
+
+class TestQuartersForSince:
+    def test_single_quarter_when_since_is_current_quarter(self):
+        today = date.today()
+        quarters = _quarters_for_since(today)
+        assert len(quarters) == 1
+        year, q = quarters[0]
+        assert year == today.year
+        assert 1 <= q <= 4
+
+    def test_max_quarters_for_old_since_date(self):
+        """A since_date several years in the past is capped at _MAX_INDEX_QUARTERS."""
+        quarters = _quarters_for_since(date(2010, 1, 1))
+        assert len(quarters) == _MAX_INDEX_QUARTERS
+
+    def test_always_ends_on_current_quarter(self):
+        today = date.today()
+        current_q = (today.month - 1) // 3 + 1
+        quarters = _quarters_for_since(date(2020, 1, 1))
+        last_year, last_q = quarters[-1]
+        assert last_year == today.year
+        assert last_q == current_q
+
+    def test_two_quarter_span(self):
+        """since_date in the previous quarter → exactly 2 quarters returned."""
+        today = date.today()
+        # Move back ~5 months to reliably land in the previous quarter
+        prev_q_date = date(
+            today.year - (1 if today.month <= 3 else 0), ((today.month - 4) % 12) + 1, 1
+        )
+        quarters = _quarters_for_since(prev_q_date)
+        # Should be 2 quarters (possibly fewer if we're right at the boundary,
+        # but always at least 1)
+        assert 1 <= len(quarters) <= 2
+
+    def test_quarter_values_are_valid(self):
+        """All returned quarter numbers must be between 1 and 4."""
+        quarters = _quarters_for_since(date(2020, 1, 1))
+        for year, q in quarters:
+            assert 1 <= q <= 4, f"Invalid quarter {q} in {year}"
+
+    def test_quarters_are_consecutive(self):
+        """Returned (year, quarter) pairs must be in consecutive calendar order."""
+        quarters = _quarters_for_since(date(2020, 1, 1))
+        for i in range(1, len(quarters)):
+            prev_y, prev_q = quarters[i - 1]
+            curr_y, curr_q = quarters[i]
+            # Convert to a comparable linear quarter index
+            assert curr_y * 4 + curr_q == prev_y * 4 + prev_q + 1
+
+
+# ===========================================================================
+# fetch_filings_from_index
+# ===========================================================================
+
+
+class TestFetchFilingsFromIndex:
+    def test_returns_cik_for_matching_filing(self):
+        zip_resp = _make_quarterly_index_zip_response(cik="320193", form_types=["10-K"])
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = zip_resp
+
+        with patch("cam.ingestion.edgar.time"):
+            ciks = fetch_filings_from_index(date(2026, 1, 1), ["10-K"], client=client)
+
+        assert "0000320193" in ciks  # zero-padded
+
+    def test_returns_zero_padded_cik(self):
+        """CIKs in the index are bare integers; function must zero-pad to 10 digits."""
+        zip_resp = _make_quarterly_index_zip_response(cik="12345", form_types=["10-K"])
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = zip_resp
+
+        with patch("cam.ingestion.edgar.time"):
+            ciks = fetch_filings_from_index(date(2026, 1, 1), ["10-K"], client=client)
+
+        assert "0000012345" in ciks
+        assert len(next(iter(ciks))) == 10
+
+    def test_filters_by_filing_type(self):
+        """CIK should only appear when its form type is in the requested list."""
+        # Index has 8-K; we ask for 10-K → no match
+        zip_resp = _make_quarterly_index_zip_response(form_types=["8-K"])
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = zip_resp
+
+        with patch("cam.ingestion.edgar.time"):
+            ciks = fetch_filings_from_index(date(2026, 1, 1), ["10-K"], client=client)
+
+        assert "0000320193" not in ciks
+
+    def test_filters_by_since_date(self):
+        """Filings before since_date must be excluded."""
+        # filed_date "2025-06-01" is before our since_date of 2026-01-01
+        zip_resp = _make_quarterly_index_zip_response(form_types=["10-K"], filed_date="2025-06-01")
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = zip_resp
+
+        with patch("cam.ingestion.edgar.time"):
+            ciks = fetch_filings_from_index(date(2026, 1, 1), ["10-K"], client=client)
+
+        assert "0000320193" not in ciks
+
+    def test_handles_404_gracefully(self):
+        """A 404 for a quarter (not yet published) must be skipped, not raised."""
+        mock_resp = MagicMock(spec=httpx.Response)
+        mock_resp.status_code = 404
+        client = MagicMock(spec=httpx.Client)
+        client.get.side_effect = httpx.HTTPStatusError(
+            "404 Not Found",
+            request=MagicMock(),
+            response=mock_resp,
+        )
+
+        with patch("cam.ingestion.edgar.time"):
+            ciks = fetch_filings_from_index(date(2026, 1, 1), ["10-K"], client=client)
+
+        assert ciks == set()
+
+    def test_handles_corrupt_zip_gracefully(self):
+        """A corrupt/truncated zip response must be skipped, not raised."""
+        bad_resp = MagicMock(spec=httpx.Response)
+        bad_resp.status_code = 200
+        bad_resp.content = b"not a zip"
+        bad_resp.raise_for_status.return_value = None
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = bad_resp
+
+        with patch("cam.ingestion.edgar.time"):
+            ciks = fetch_filings_from_index(date(2026, 1, 1), ["10-K"], client=client)
+
+        assert ciks == set()
+
+    def test_multiple_ciks_from_same_index(self):
+        """Multiple distinct CIKs in one index file should all be returned."""
+        content = (
+            "CIK|Company Name|Form Type|Date Filed|Filename\n" + "-" * 80 + "\n"
+            "111111|Corp A|10-K|2026-01-15|edgar/data/111111/a.txt\n"
+            "222222|Corp B|10-K|2026-01-20|edgar/data/222222/b.txt\n"
+        )
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("master.idx", content)
+
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.content = buf.getvalue()
+        resp.raise_for_status.return_value = None
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = resp
+
+        with patch("cam.ingestion.edgar.time"):
+            ciks = fetch_filings_from_index(date(2026, 1, 1), ["10-K"], client=client)
+
+        assert "0000111111" in ciks
+        assert "0000222222" in ciks
+
+    def test_empty_index_returns_empty_set(self):
+        zip_resp = _make_empty_index_zip_response()
+        client = MagicMock(spec=httpx.Client)
+        client.get.return_value = zip_resp
+
+        with patch("cam.ingestion.edgar.time"):
+            ciks = fetch_filings_from_index(date(2026, 1, 1), ["10-K"], client=client)
+
+        assert ciks == set()
 
 
 # ===========================================================================
