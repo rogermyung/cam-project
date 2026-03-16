@@ -17,9 +17,10 @@ Usage (Docker)::
 Steps are designed to be run independently so they can be scheduled at
 different frequencies:
 
-    02:00  ingest (all regulatory sources)
-    04:00  score  (reads signals written by ingest)
-    04:30  export (reads alert_scores written by score)
+    02:00  ingest  (all regulatory sources → events table)
+    03:00  analyze (events → signals table via M6 cross-agency aggregation)
+    04:00  score   (signals → alert_scores table)
+    04:30  export  (alert_scores → static dashboard JSON)
 
 Each step exits 0 on success and non-zero on failure so schedulers and CI
 pipelines can detect and report failures.
@@ -156,6 +157,39 @@ def _ingest_source(source: str, since: date, args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# analyze
+# ---------------------------------------------------------------------------
+
+
+def _cmd_analyze(args: argparse.Namespace) -> int:
+    """Run analysis modules (M6+) to write Signal records for all entities.
+
+    Bridges the ingest pipeline (Events) and the scorer (Signals): the scorer
+    requires Signal rows to exist before it can produce AlertScores.  This
+    command must be run *after* ingest and *before* score.
+
+    Currently implements:
+      - M6 cross-agency composite signal (aggregation.py)
+    """
+    from cam.analysis.aggregation import write_cross_agency_signals
+    from cam.db.session import get_session
+
+    score_date: date = args.date or date.today()
+    logger.info("Analysis starting — score_date=%s", score_date)
+
+    try:
+        with get_session() as db:
+            n = write_cross_agency_signals(db=db, score_date=score_date)
+            db.commit()
+        logger.info("Analysis complete — %d cross_agency_composite signals written.", n)
+    except Exception as exc:
+        logger.error("Analysis failed: %s", exc, exc_info=True)
+        return 1
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # score
 # ---------------------------------------------------------------------------
 
@@ -286,6 +320,25 @@ Examples:
         help="Ingest records on or after this date (default: configured ingest_default_since_days ago)",
     )
 
+    # ---- analyze ----
+    p_analyze = sub.add_parser(
+        "analyze",
+        help="Run analysis modules (M6+) to write Signal records from ingested Events",
+        description=(
+            "Reads events from the events table and runs analysis modules (M6 "
+            "cross-agency aggregation, and optionally M7-M12) to produce Signal "
+            "rows consumed by the scorer. Must be run after ingest and before score."
+        ),
+    )
+    p_analyze.add_argument(
+        "--date",
+        type=_parse_date_arg,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Score date written onto Signal rows (default: today)",
+    )
+    p_analyze.set_defaults(func=_cmd_analyze)
+
     # ---- score ----
     p_score = sub.add_parser(
         "score",
@@ -350,6 +403,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "ingest":
         return _cmd_ingest(args)
+    if args.command == "analyze":
+        return _cmd_analyze(args)
     if args.command == "score":
         return _cmd_score(args)
     if args.command == "export":

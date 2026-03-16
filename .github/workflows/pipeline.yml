@@ -1,6 +1,6 @@
 # CAM Daily Pipeline
 #
-# Runs the full ingest → score → export → build pipeline on a schedule.
+# Runs the full ingest → analyze → score → export pipeline on a schedule.
 # Each step is a separate job so they can fail independently and be
 # re-run or skipped individually via workflow_dispatch.
 #
@@ -88,7 +88,7 @@ jobs:
       - name: Ingest all sources
         # Each source is attempted independently inside the entrypoint.
         # Exit code 1 if any source failed, but others still run.
-        # Score/export will still run on whatever was successfully ingested.
+        # Analyze/score/export will still run on whatever was successfully ingested.
         run: |
           if [ -n "$CAM_SINCE" ]; then
             python -m cam.entrypoint ingest --source all --since "$CAM_SINCE"
@@ -101,17 +101,55 @@ jobs:
           CAM_SINCE: ${{ github.event.inputs.since }}
 
   # ---------------------------------------------------------------------------
-  # Step 2: Score
+  # Step 2: Analyze — convert events → signals (M6 cross-agency composite)
+  # ---------------------------------------------------------------------------
+  analyze:
+    name: Analyze & write signals
+    runs-on: ubuntu-latest
+    needs: ingest
+    # Run if ingest succeeded, failed (partial source failure), or was skipped.
+    # Score/export will still run on whatever signals are in the DB.
+    if: >-
+      always() &&
+      needs.ingest.result != 'cancelled' &&
+      (
+        github.event_name == 'schedule' ||
+        github.event.inputs.step == '' ||
+        github.event.inputs.step == 'score'
+      )
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run analysis (events → signals)
+        run: |
+          DATE="${CAM_SCORE_DATE:-today}"
+          python -m cam.entrypoint analyze --date "$DATE"
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+          CAM_SCORE_DATE: ${{ github.event.inputs.score_date }}
+
+  # ---------------------------------------------------------------------------
+  # Step 3: Score
   # ---------------------------------------------------------------------------
   score:
     name: Score entities
     runs-on: ubuntu-latest
-    needs: ingest
-    # Run if ingest succeeded, failed (partial source failure), or was skipped
+    needs: analyze
+    # Run if analyze succeeded, failed, or was skipped
     # — scoring always runs on whatever data is in the DB.
     if: >-
       always() &&
-      needs.ingest.result != 'cancelled' &&
+      needs.analyze.result != 'cancelled' &&
       (
         github.event_name == 'schedule' ||
         github.event.inputs.step == '' ||
@@ -139,7 +177,7 @@ jobs:
           CAM_SCORE_DATE: ${{ github.event.inputs.score_date }}
 
   # ---------------------------------------------------------------------------
-  # Step 3: Export data + build React dashboard + deploy to GitHub Pages
+  # Step 4: Export data + build React dashboard + deploy to GitHub Pages
   # ---------------------------------------------------------------------------
   export:
     name: Export & build dashboard
