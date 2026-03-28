@@ -13,8 +13,9 @@ from __future__ import annotations
 import io
 import logging
 import time
+import uuid
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from html.parser import HTMLParser
 from typing import Any
@@ -29,12 +30,15 @@ from tenacity import (
 )
 
 from cam.config import get_settings
+from cam.ingestion.base import IngestResult
+from cam.ingestion.circuit_breaker import get_breaker
+from cam.ingestion.dlq import ERROR_DB_WRITE, record_failure
 
 logger = logging.getLogger(__name__)
 
 # EDGAR base URLs
 _EDGAR_SUBMISSIONS_BASE = "https://data.sec.gov/submissions"
-_EDGAR_COMPANY_TICKERS = "https://data.sec.gov/files/company_tickers.json"
+_EDGAR_COMPANY_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 _EDGAR_ARCHIVES_BASE = "https://www.sec.gov/Archives/edgar/data"
 _EDGAR_XBRL_BASE = "https://data.sec.gov/api/xbrl/companyfacts"
 # _EDGAR_FULL_INDEX_BASE is now configured via cam.config Settings
@@ -77,17 +81,6 @@ class FilingDocument:
     metadata: FilingMetadata
     text: str
     object_store_path: str  # e.g. "edgar/0000320193/0000320193-24-000006/full.txt"
-
-
-@dataclass
-class IngestResult:
-    """Summary of a bulk ingestion run."""
-
-    total: int = 0
-    ingested: int = 0
-    skipped: int = 0
-    errors: int = 0
-    error_details: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +128,7 @@ def _get(
     client: httpx.Client | None = None,
 ) -> httpx.Response:
     """GET with automatic retry on transient errors and 429 back-off."""
+    breaker = get_breaker("edgar")
 
     @_make_retry_decorator()
     def _request() -> httpx.Response:
@@ -144,8 +138,6 @@ def _get(
             resp = httpx.get(url, params=params, headers=_headers(), timeout=30)
 
         if resp.status_code == 429:
-            # Re-raise as HTTPStatusError so _is_retriable_error catches it
-            # and tenacity applies exponential back-off before retrying.
             raise httpx.HTTPStatusError(
                 "EDGAR rate limited (429)",
                 request=resp.request,
@@ -155,7 +147,7 @@ def _get(
         resp.raise_for_status()
         return resp
 
-    return _request()
+    return breaker.call(_request)
 
 
 def _accession_no_dashes(accession_number: str) -> str:
@@ -592,6 +584,7 @@ def ingest_all_10k(
     s3_client=None,
     filing_types: list[str] | None = None,
     fetch_xbrl: bool = True,
+    run_id: uuid.UUID | None = None,
 ) -> IngestResult:
     """Ingest 10-K (and optionally other) filings for all tracked entities.
 
@@ -634,7 +627,7 @@ def ingest_all_10k(
     if filing_types is None:
         filing_types = ["10-K"]
 
-    result = IngestResult()
+    result = IngestResult(run_id=run_id or uuid.uuid4())
 
     stmt = select(Entity).where(Entity.ticker.isnot(None))
     if entity_ids:
@@ -738,13 +731,31 @@ def ingest_all_10k(
 
                 time.sleep(REQUEST_DELAY)
                 doc = download_filing(filing, client=client, s3_client=s3_client)
-                _upsert_filing_event(
-                    db, filing, doc.object_store_path, entity.id, xbrl_facts=xbrl_facts
-                )
+
+                with db.begin_nested():  # SAVEPOINT — isolates this filing's write
+                    _upsert_filing_event(
+                        db, filing, doc.object_store_path, entity.id, xbrl_facts=xbrl_facts
+                    )
                 result.ingested += 1
 
             except Exception as exc:  # noqa: BLE001
                 logger.error("Failed to ingest filing %s: %s", filing.accession_number, exc)
+                failure = record_failure(
+                    db,
+                    source="edgar",
+                    run_id=result.run_id,
+                    raw_record={
+                        "accession_number": filing.accession_number,
+                        "cik": filing.cik,
+                        "filing_type": filing.filing_type,
+                        "filed_date": str(filing.filed_date) if filing.filed_date else None,
+                    },
+                    error_type=ERROR_DB_WRITE,
+                    exc=exc,
+                    raw_key=filing.accession_number,
+                )
+                if failure is not None:
+                    result.dlq_ids.append(failure.id)
                 result.errors += 1
                 result.error_details.append(f"Filing {filing.accession_number}: {exc}")
 

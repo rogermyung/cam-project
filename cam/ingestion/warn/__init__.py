@@ -22,6 +22,7 @@ import hashlib
 import io
 import json
 import logging
+import uuid as _uuid_mod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -40,6 +41,8 @@ from tenacity import (
 
 from cam.db.models import Event, Signal
 from cam.entity.resolver import bulk_resolve
+from cam.ingestion.circuit_breaker import get_breaker
+from cam.ingestion.dlq import ERROR_DB_WRITE, ERROR_ENTITY_RESOLUTION, record_failure
 
 from .state_urls import STATE_CONFIGS, StateConfig
 
@@ -74,6 +77,8 @@ class IngestResult:
     skipped: int = 0
     errors: int = 0
     error_details: list[str] = field(default_factory=list)
+    dlq_ids: list[UUID] = field(default_factory=list)
+    run_id: UUID = field(default_factory=_uuid_mod.uuid4)
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +101,7 @@ def _fetch(url: str, *, client: httpx.Client | None = None) -> bytes:
     default 60 s) when making live requests.  Injected clients (used in tests)
     are called with a fixed 60 s timeout since the mock ignores the value.
     """
+    breaker = get_breaker("warn")
 
     @retry(
         retry=retry_if_exception(_is_retriable),
@@ -114,7 +120,7 @@ def _fetch(url: str, *, client: httpx.Client | None = None) -> bytes:
         resp.raise_for_status()
         return resp.content
 
-    return _request()
+    return breaker.call(_request)
 
 
 # ---------------------------------------------------------------------------
@@ -356,9 +362,10 @@ def _records_to_events(
     since_date: date | None,
     existing_keys: set[str],
     db: Session,
+    run_id: _uuid_mod.UUID | None = None,
 ) -> IngestResult:
     """Resolve entities and insert WARN events; returns ingestion counts."""
-    result = IngestResult()
+    result = IngestResult(run_id=run_id or _uuid_mod.uuid4())
     result.total = len(records)
 
     # Date guard (same pattern as M3/M4: None dates are excluded when filter active)
@@ -378,41 +385,73 @@ def _records_to_events(
         return result
 
     # Bulk entity resolution (commit=False; caller owns the commit).
-    # bulk_resolve expects list[dict] with at least a "name" key and returns
-    # a parallel list[ResolveResult] aligned with the input list.
     resolve_records = [{"name": r.company} for r in to_process]
     resolved = bulk_resolve(resolve_records, "warn", db=db, commit=False)
 
     for rec, res in zip(to_process, resolved):
         key = _idempotency_key(rec.state_code, rec.company, rec.notice_date, rec.raw)
-        try:
-            entity_id = res.entity_id
-            raw_json: dict[str, Any] = {
-                "_warn_key": key,
-                "state_code": rec.state_code,
-                "company": rec.company,
-                "city": rec.city,
-                "county": rec.county,
-                "layoff_type": rec.layoff_type,
-                "employees_affected": rec.employees_affected,
-                **rec.raw,
-            }
-            event = Event(
-                entity_id=entity_id,
+
+        if res.entity_id is None and not res.needs_review:
+            failure = record_failure(
+                db,
                 source="warn",
-                event_type="warn_notice",
-                event_date=rec.notice_date,
-                description=(
-                    f"{rec.layoff_type}: {rec.employees_affected or '?'} employees affected "
-                    f"at {rec.company}, {rec.city}, {rec.state_code}"
+                run_id=result.run_id,
+                raw_record={
+                    "company": rec.company,
+                    "state_code": rec.state_code,
+                    "city": rec.city,
+                    **rec.raw,
+                },
+                error_type=ERROR_ENTITY_RESOLUTION,
+                exc=ValueError(
+                    f"No entity match for {rec.company!r} (confidence={res.confidence:.2f})"
                 ),
-                raw_json=raw_json,
+                raw_key=key,
             )
-            db.add(event)
-            result.ingested += 1
-        except Exception as exc:
+            if failure is not None:
+                result.dlq_ids.append(failure.id)
             result.errors += 1
-            result.error_details.append(f"{rec.company}: {exc}")
+            result.error_details.append(f"{rec.company}: entity resolution failed")
+        else:
+            try:
+                raw_json: dict[str, Any] = {
+                    "_warn_key": key,
+                    "state_code": rec.state_code,
+                    "company": rec.company,
+                    "city": rec.city,
+                    "county": rec.county,
+                    "layoff_type": rec.layoff_type,
+                    "employees_affected": rec.employees_affected,
+                    **rec.raw,
+                }
+                with db.begin_nested():  # SAVEPOINT
+                    event = Event(
+                        entity_id=res.entity_id,
+                        source="warn",
+                        event_type="warn_notice",
+                        event_date=rec.notice_date,
+                        description=(
+                            f"{rec.layoff_type}: {rec.employees_affected or '?'} employees "
+                            f"affected at {rec.company}, {rec.city}, {rec.state_code}"
+                        ),
+                        raw_json=raw_json,
+                    )
+                    db.add(event)
+                result.ingested += 1
+            except Exception as exc:
+                failure = record_failure(
+                    db,
+                    source="warn",
+                    run_id=result.run_id,
+                    raw_record={"company": rec.company, "state_code": rec.state_code, **rec.raw},
+                    error_type=ERROR_DB_WRITE,
+                    exc=exc,
+                    raw_key=key,
+                )
+                if failure is not None:
+                    result.dlq_ids.append(failure.id)
+                result.errors += 1
+                result.error_details.append(f"{rec.company}: {exc}")
 
     # Caller (ingest_state / ingest_all_states) owns the commit boundary.
     return result

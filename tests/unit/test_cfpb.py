@@ -329,6 +329,28 @@ class TestFetchComplaintsPage:
 
 
 class TestIngestComplaints:
+    @pytest.fixture(autouse=True)
+    def mock_entity_resolution(self, monkeypatch):
+        import uuid
+
+        from cam.entity.resolver import ResolveResult
+
+        fake_eid = uuid.uuid4()
+
+        def _fake_bulk_resolve(records, source, db, commit=True):
+            return [
+                ResolveResult(
+                    entity_id=fake_eid,
+                    canonical_name="Fake Entity",
+                    confidence=1.0,
+                    method="exact",
+                    needs_review=False,
+                )
+                for _ in records
+            ]
+
+        monkeypatch.setattr("cam.ingestion.cfpb.bulk_resolve", _fake_bulk_resolve)
+
     def test_ingests_all_within_date(self, db):
         complaints = _flatten_fixture()
         # since_date=2022-01-01 excludes the 2021-11-15 record (CFPB-2021-OLD)
@@ -448,28 +470,34 @@ class TestIngestComplaints:
         assert result.ingested == 0
         assert result.skipped == 1
 
-    def test_entity_resolution_strips_legal_suffix(self, db):
-        entity = _make_entity(db, "WELLS FARGO BANK")
-        from cam.entity.resolver import add_alias
 
-        add_alias(entity.id, "WELLS FARGO BANK", "cfpb_complaint", 1.0, db)
+# ---------------------------------------------------------------------------
+# Entity resolution integration test (not mocked — uses real resolver)
+# ---------------------------------------------------------------------------
 
-        complaints = _flatten_fixture()
-        ingest_complaints(date(2022, 1, 1), db=db, complaints=complaints)
 
-        from sqlalchemy import select
+def test_entity_resolution_strips_legal_suffix(db):
+    entity = _make_entity(db, "WELLS FARGO BANK")
+    from cam.entity.resolver import add_alias
 
-        linked = (
-            db.execute(
-                select(Event).where(
-                    Event.source == "cfpb_complaint",
-                    Event.entity_id == entity.id,
-                )
+    add_alias(entity.id, "WELLS FARGO BANK", "cfpb_complaint", 1.0, db)
+
+    complaints = _flatten_fixture()
+    ingest_complaints(date(2022, 1, 1), db=db, complaints=complaints)
+
+    from sqlalchemy import select
+
+    linked = (
+        db.execute(
+            select(Event).where(
+                Event.source == "cfpb_complaint",
+                Event.entity_id == entity.id,
             )
-            .scalars()
-            .all()
         )
-        assert len(linked) >= 1
+        .scalars()
+        .all()
+    )
+    assert len(linked) >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -629,6 +657,28 @@ class TestDetectComplaintSpike:
 
 
 class TestPerformance:
+    @pytest.fixture(autouse=True)
+    def mock_entity_resolution(self, monkeypatch):
+        import uuid
+
+        from cam.entity.resolver import ResolveResult
+
+        fake_eid = uuid.uuid4()
+
+        def _fake_bulk_resolve(records, source, db, commit=True):
+            return [
+                ResolveResult(
+                    entity_id=fake_eid,
+                    canonical_name="Fake Entity",
+                    confidence=1.0,
+                    method="exact",
+                    needs_review=False,
+                )
+                for _ in records
+            ]
+
+        monkeypatch.setattr("cam.ingestion.cfpb.bulk_resolve", _fake_bulk_resolve)
+
     def test_ingest_fixture_within_time_limit(self, db):
         """11-complaint fixture must ingest in < 5 seconds."""
         complaints = _flatten_fixture()

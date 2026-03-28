@@ -7,6 +7,13 @@ bulk CSV downloads and the DOL near-real-time API.
 Data sources:
   Bulk CSV:  https://www.osha.gov/foia/enforcement-data
   DOL API:   https://data.dol.gov/get/inspections
+
+Resilience (M15):
+  - Per-record DLQ on entity resolution failure or DB write error
+  - Checkpoint every CHECKPOINT_EVERY records so restarts resume mid-file
+  - Per-entity savepoint isolation (one bad record cannot roll back others)
+  - Circuit breaker on DOL API calls
+  - Structured log fields on every failure
 """
 
 from __future__ import annotations
@@ -15,7 +22,7 @@ import csv
 import logging
 import re
 import tempfile
-from dataclasses import dataclass, field
+import uuid
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -33,6 +40,14 @@ from tenacity import (
 
 from cam.db.models import Event
 from cam.entity.resolver import bulk_resolve
+from cam.ingestion.base import IngestResult
+from cam.ingestion.checkpoint import complete_checkpoint, load_checkpoint, save_checkpoint
+from cam.ingestion.circuit_breaker import get_breaker
+from cam.ingestion.dlq import (
+    ERROR_DB_WRITE,
+    ERROR_ENTITY_RESOLUTION,
+    record_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,21 +62,8 @@ _PENALTY_STRIP_RE = re.compile(r"[\$,\s]")
 # Strip the " - <SUFFIX>" portion to recover the canonical company name.
 _ESTAB_SUFFIX_RE = re.compile(r"\s+-\s+[A-Z0-9 ]+$")
 
-
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class IngestResult:
-    """Summary of a bulk ingestion run."""
-
-    total: int = 0
-    ingested: int = 0
-    skipped: int = 0
-    errors: int = 0
-    error_details: list[str] = field(default_factory=list)
+# Write a checkpoint every N records processed.
+CHECKPOINT_EVERY = 500
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +93,7 @@ def _get(
     url: str, params: dict[str, Any] | None = None, *, client: httpx.Client | None = None
 ) -> httpx.Response:
     """GET with automatic retry on transient errors and 429 back-off."""
+    breaker = get_breaker("osha_api")
 
     @_make_retry_decorator()
     def _request() -> httpx.Response:
@@ -101,7 +104,7 @@ def _get(
         resp.raise_for_status()
         return resp
 
-    return _request()
+    return breaker.call(_request)
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +201,8 @@ def ingest_from_csv(
     since_date: date | None = None,
     *,
     db: Session,
+    run_id: uuid.UUID | None = None,
+    resume: bool = True,
 ) -> IngestResult:
     """Parse an OSHA enforcement CSV, resolve entities, and insert events.
 
@@ -209,8 +214,11 @@ def ingest_from_csv(
     csv_path:   Path to the CSV file (local).
     since_date: If provided, only rows with open_date >= since_date are ingested.
     db:         SQLAlchemy session.
+    run_id:     UUID for this run (used for DLQ and checkpoints).  A new UUID
+                is generated if not provided.
+    resume:     If True, load the latest incomplete checkpoint and skip ahead.
     """
-    result = IngestResult()
+    result = IngestResult(run_id=run_id or uuid.uuid4())
 
     # --- Read CSV ---
     rows: list[dict[str, str]] = []
@@ -227,8 +235,7 @@ def ingest_from_csv(
     result.total = len(rows)
 
     # --- Filter by since_date ---
-    # Rows with an unparseable open_date are excluded when since_date is set;
-    # keeping them would silently ingest out-of-window records.
+    # Rows with an unparseable open_date are excluded when since_date is set.
     if since_date is not None:
         filtered = []
         for row in rows:
@@ -249,34 +256,92 @@ def ingest_from_csv(
             to_process.append(row)
 
     if not to_process:
+        complete_checkpoint(db, "osha", result.run_id)
+        db.commit()
         return result
 
+    # --- Resume from checkpoint ---
+    start_offset = 0
+    if resume:
+        cursor = load_checkpoint(db, source="osha", run_id=result.run_id)
+        if cursor is not None:
+            start_offset = cursor.get("offset", 0)
+            logger.info("Resuming OSHA ingest from offset %d", start_offset)
+            result.ingested = cursor.get("records_ok", 0)
+            result.errors = cursor.get("records_err", 0)
+
+    to_process = to_process[start_offset:]
+
     # --- Bulk entity resolution ---
-    # commit=False: ingest_from_csv owns the transaction; we commit once below
-    # after all events are inserted so that the entire batch is atomic.
+    # commit=False: ingest_from_csv owns the transaction boundary.
     resolve_records = [{"name": _clean_estab_name(r.get("estab_name", ""))} for r in to_process]
     resolved = bulk_resolve(resolve_records, "osha", db, commit=False)
 
-    # --- Insert events ---
-    for row, res in zip(to_process, resolved):
+    # --- Insert events with per-entity savepoint isolation ---
+    for i, (row, res) in enumerate(zip(to_process, resolved)):
+        absolute_offset = start_offset + i
         nr = row.get("activity_nr", "").strip()
-        try:
-            event = Event(
-                entity_id=res.entity_id,
-                source="osha",
-                event_type=_event_type(row),
-                event_date=_parse_date(row.get("open_date", "")),
-                penalty_usd=_parse_penalty(row.get("initial_penalty", "")),
-                description=_description(row),
-                raw_json={**row, "activity_nr": nr},
-            )
-            db.add(event)
-            result.ingested += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to ingest OSHA record %s: %s", nr, exc)
-            result.errors += 1
-            result.error_details.append(f"activity_nr={nr}: {exc}")
 
+        # Entity resolution failure → DLQ
+        if res.entity_id is None and not res.needs_review:
+            failure = record_failure(
+                db,
+                source="osha",
+                run_id=result.run_id,
+                raw_record={**row, "activity_nr": nr},
+                error_type=ERROR_ENTITY_RESOLUTION,
+                exc=ValueError(
+                    f"No entity match for {row.get('estab_name')!r} "
+                    f"(confidence={res.confidence:.2f})"
+                ),
+                raw_key=nr or None,
+            )
+            if failure is not None:
+                result.dlq_ids.append(failure.id)
+            result.errors += 1
+            result.error_details.append(f"activity_nr={nr}: entity resolution failed")
+        else:
+            try:
+                with db.begin_nested():  # SAVEPOINT — isolates this record's failure
+                    event = Event(
+                        entity_id=res.entity_id,
+                        source="osha",
+                        event_type=_event_type(row),
+                        event_date=_parse_date(row.get("open_date", "")),
+                        penalty_usd=_parse_penalty(row.get("initial_penalty", "")),
+                        description=_description(row),
+                        raw_json={**row, "activity_nr": nr},
+                    )
+                    db.add(event)
+                result.ingested += 1
+            except Exception as exc:  # noqa: BLE001
+                failure = record_failure(
+                    db,
+                    source="osha",
+                    run_id=result.run_id,
+                    raw_record={**row, "activity_nr": nr},
+                    error_type=ERROR_DB_WRITE,
+                    exc=exc,
+                    raw_key=nr or None,
+                )
+                if failure is not None:
+                    result.dlq_ids.append(failure.id)
+                result.errors += 1
+                result.error_details.append(f"activity_nr={nr}: {exc}")
+
+        # Checkpoint every CHECKPOINT_EVERY records
+        if (absolute_offset + 1) % CHECKPOINT_EVERY == 0:
+            save_checkpoint(
+                db,
+                source="osha",
+                run_id=result.run_id,
+                cursor={"offset": absolute_offset + 1},
+                records_ok=result.ingested,
+                records_err=result.errors,
+            )
+
+    complete_checkpoint(db, "osha", result.run_id)
+    result.checkpoint = {"offset": start_offset + len(to_process)}
     db.commit()
     return result
 
@@ -290,6 +355,7 @@ def fetch_recent_inspections(
 
     Returns a list of raw inspection dicts as returned by the API.
     Intended for near-real-time updates between bulk CSV refreshes.
+    Raises CircuitOpenError if the OSHA API circuit breaker is open.
     """
     end_date = date.today()
     start_date = end_date - timedelta(days=days_back)
@@ -307,7 +373,6 @@ def fetch_recent_inspections(
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
-        # Some DOL API responses wrap the list under a key
         return data.get("data", data.get("inspections", []))
     logger.warning("Unexpected DOL API response type %s; returning empty list", type(data).__name__)
     return []

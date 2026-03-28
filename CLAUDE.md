@@ -85,7 +85,8 @@ frontend/           # React + TypeScript dashboard (Vite + shadcn/ui)
 | M11 — WARN Act Ingestion | #12 | ✅ Complete | #28 |
 | M12 — PE/Bankruptcy Correlator | #13 | ✅ Complete | #29 |
 | M13 — Alert Scoring Engine | #14 | ✅ Complete | #30 |
-| M14 — Output Layer | #15 | 🔄 In Progress | — |
+| M14 — Output Layer | #15 | ✅ Complete | #31 |
+| M15 — Pipeline Resilience & DLQ | #51 | 🔄 In Progress | — |
 
 ## Skills (Slash Commands)
 
