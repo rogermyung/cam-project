@@ -41,7 +41,11 @@ from tenacity import (
 from cam.db.models import Event
 from cam.entity.resolver import bulk_resolve
 from cam.ingestion.base import IngestResult
-from cam.ingestion.checkpoint import complete_checkpoint, load_checkpoint, save_checkpoint
+from cam.ingestion.checkpoint import (
+    _load_checkpoint_row,
+    complete_checkpoint,
+    save_checkpoint,
+)
 from cam.ingestion.circuit_breaker import get_breaker
 from cam.ingestion.dlq import (
     ERROR_DB_WRITE,
@@ -218,6 +222,14 @@ def ingest_from_csv(
                 is generated if not provided.
     resume:     If True, load the latest incomplete checkpoint and skip ahead.
     """
+    # If no run_id is given and resume is requested, try to adopt the most-recent
+    # incomplete run so a crash/restart continues rather than starting over.
+    if run_id is None and resume:
+        prior = _load_checkpoint_row(db, source="osha")
+        if prior is not None:
+            run_id = prior.run_id
+            logger.info("Resuming OSHA ingest: adopting prior run_id %s", run_id)
+
     result = IngestResult(run_id=run_id or uuid.uuid4())
 
     # --- Read CSV ---
@@ -261,10 +273,13 @@ def ingest_from_csv(
         return result
 
     # --- Resume from checkpoint ---
+    # The cursor dict stores {offset, records_ok, records_err} so all three are
+    # available after a crash without needing a separate DB column read.
     start_offset = 0
     if resume:
-        cursor = load_checkpoint(db, source="osha", run_id=result.run_id)
-        if cursor is not None:
+        prior_row = _load_checkpoint_row(db, source="osha", run_id=result.run_id)
+        if prior_row is not None:
+            cursor = prior_row.checkpoint or {}
             start_offset = cursor.get("offset", 0)
             logger.info("Resuming OSHA ingest from offset %d", start_offset)
             result.ingested = cursor.get("records_ok", 0)
@@ -329,13 +344,18 @@ def ingest_from_csv(
                 result.errors += 1
                 result.error_details.append(f"activity_nr={nr}: {exc}")
 
-        # Checkpoint every CHECKPOINT_EVERY records
+        # Checkpoint every CHECKPOINT_EVERY records; include counters in the
+        # cursor dict so load_checkpoint returns everything needed to resume.
         if (absolute_offset + 1) % CHECKPOINT_EVERY == 0:
             save_checkpoint(
                 db,
                 source="osha",
                 run_id=result.run_id,
-                cursor={"offset": absolute_offset + 1},
+                cursor={
+                    "offset": absolute_offset + 1,
+                    "records_ok": result.ingested,
+                    "records_err": result.errors,
+                },
                 records_ok=result.ingested,
                 records_err=result.errors,
             )

@@ -9,7 +9,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import UUID
 
 revision: str = "0002"
 down_revision: str | None = "0001"
@@ -24,7 +24,7 @@ def upgrade() -> None:
         sa.Column("source", sa.String(50), nullable=False),
         sa.Column("run_id", UUID(as_uuid=True), nullable=False),
         sa.Column("raw_key", sa.Text, nullable=True),
-        sa.Column("raw_json", JSONB, nullable=False),
+        sa.Column("raw_json", sa.JSON(), nullable=False),
         sa.Column("error_type", sa.String(50), nullable=False),
         sa.Column("error_msg", sa.Text, nullable=False),
         sa.Column("traceback", sa.Text, nullable=True),
@@ -51,7 +51,7 @@ def upgrade() -> None:
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
         sa.Column("source", sa.String(50), nullable=False),
         sa.Column("run_id", UUID(as_uuid=True), nullable=False),
-        sa.Column("checkpoint", JSONB, nullable=False),
+        sa.Column("checkpoint", sa.JSON(), nullable=False),
         sa.Column("records_ok", sa.Integer, nullable=False, server_default="0"),
         sa.Column("records_err", sa.Integer, nullable=False, server_default="0"),
         sa.Column(

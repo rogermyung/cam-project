@@ -11,7 +11,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from cam.db.models import Base, IngestCheckpoint
-from cam.ingestion.checkpoint import complete_checkpoint, load_checkpoint, save_checkpoint
+from cam.ingestion.checkpoint import (
+    _load_checkpoint_row,
+    complete_checkpoint,
+    load_checkpoint,
+    save_checkpoint,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -123,6 +128,62 @@ def test_completed_checkpoint_not_returned_by_load(db):
 
     loaded = load_checkpoint(db, source, run_id=run_id)
     assert loaded is None  # completed runs are excluded
+
+
+# ---------------------------------------------------------------------------
+# _load_checkpoint_row — run_id adoption for crash-restart resume
+# ---------------------------------------------------------------------------
+
+
+def test_load_checkpoint_row_returns_full_row(db):
+    source = "osha_row_test"
+    run_id = uuid.uuid4()
+    cursor = {"offset": 250, "records_ok": 240, "records_err": 10}
+
+    save_checkpoint(db, source, run_id, cursor, records_ok=240, records_err=10)
+    db.commit()
+
+    row = _load_checkpoint_row(db, source)
+    assert row is not None
+    assert row.run_id == run_id
+    assert row.checkpoint == cursor
+    assert row.records_ok == 240
+
+
+def test_load_checkpoint_row_returns_none_when_no_checkpoint(db):
+    assert _load_checkpoint_row(db, "no_such_source_xyz") is None
+
+
+def test_load_checkpoint_row_excludes_completed(db):
+    source = "osha_row_completed"
+    run_id = uuid.uuid4()
+
+    save_checkpoint(db, source, run_id, {"offset": 100}, 100, 0)
+    db.commit()
+    complete_checkpoint(db, source, run_id)
+    db.commit()
+
+    assert _load_checkpoint_row(db, source) is None
+
+
+def test_run_id_adoption_pattern(db):
+    """Simulate crash-restart: adopting prior run_id so counters resume correctly."""
+    source = "osha_adoption"
+    original_run_id = uuid.uuid4()
+    cursor = {"offset": 500, "records_ok": 490, "records_err": 10}
+
+    save_checkpoint(db, source, original_run_id, cursor, records_ok=490, records_err=10)
+    db.commit()
+
+    # Simulate restart: no run_id passed, load prior row and adopt its run_id
+    prior_row = _load_checkpoint_row(db, source)
+    assert prior_row is not None
+    adopted_run_id = prior_row.run_id
+    assert adopted_run_id == original_run_id
+
+    resumed_cursor = prior_row.checkpoint
+    assert resumed_cursor.get("offset") == 500
+    assert resumed_cursor.get("records_ok") == 490
 
 
 # ---------------------------------------------------------------------------

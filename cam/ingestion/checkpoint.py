@@ -95,6 +95,16 @@ def load_checkpoint(
     If ``run_id`` is None, return the most-recently-updated incomplete run.
     Returns None if no incomplete checkpoint is found (start from the beginning).
     """
+    row = _load_checkpoint_row(db, source, run_id)
+    return row.checkpoint if row is not None else None
+
+
+def _load_checkpoint_row(
+    db: Session,
+    source: str,
+    run_id: uuid.UUID | None = None,
+) -> IngestCheckpoint | None:
+    """Return the full IngestCheckpoint row (or None) for the latest incomplete run."""
     stmt = (
         select(IngestCheckpoint)
         .where(IngestCheckpoint.source == source)
@@ -105,8 +115,7 @@ def load_checkpoint(
     if run_id is not None:
         stmt = stmt.where(IngestCheckpoint.run_id == run_id)
 
-    row = db.execute(stmt).scalars().first()
-    return row.checkpoint if row is not None else None
+    return db.execute(stmt).scalars().first()
 
 
 def complete_checkpoint(

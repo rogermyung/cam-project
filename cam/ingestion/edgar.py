@@ -36,13 +36,12 @@ from cam.ingestion.dlq import ERROR_DB_WRITE, record_failure
 
 logger = logging.getLogger(__name__)
 
-# EDGAR base URLs
+# EDGAR base URLs (static — not environment-varying)
 _EDGAR_SUBMISSIONS_BASE = "https://data.sec.gov/submissions"
-_EDGAR_COMPANY_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 _EDGAR_ARCHIVES_BASE = "https://www.sec.gov/Archives/edgar/data"
 _EDGAR_XBRL_BASE = "https://data.sec.gov/api/xbrl/companyfacts"
-# _EDGAR_FULL_INDEX_BASE is now configured via cam.config Settings
-# (edgar_full_index_base) to allow environment-specific overrides.
+# All environment-varying URLs are in cam.config Settings:
+#   edgar_full_index_base, edgar_company_tickers_url
 
 # Key US-GAAP concepts to extract from the companyfacts endpoint.
 _XBRL_KEY_CONCEPTS = ("Revenues", "Assets", "NetIncomeLoss", "StockholdersEquity")
@@ -223,7 +222,7 @@ def get_cik_for_ticker(
     Returns None if the ticker is not found.
     """
     try:
-        resp = _get(_EDGAR_COMPANY_TICKERS, client=client)
+        resp = _get(get_settings().edgar_company_tickers_url, client=client)
         data: dict[str, dict] = resp.json()
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("Failed to fetch company tickers: %s", exc)
@@ -643,7 +642,7 @@ def ingest_all_10k(
     # ------------------------------------------------------------------
     try:
         time.sleep(REQUEST_DELAY)
-        tickers_resp = _get(_EDGAR_COMPANY_TICKERS, client=client)
+        tickers_resp = _get(get_settings().edgar_company_tickers_url, client=client)
         tickers_data: dict = tickers_resp.json()
     except (httpx.HTTPError, ValueError) as exc:
         logger.error("Failed to fetch company tickers: %s", exc)
