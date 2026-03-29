@@ -2,10 +2,13 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
+from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
+load_dotenv()
+
 # Import all models so Alembic can detect them
-from cam.db.models import Base  # noqa: F401
+from cam.db.models import Base  # noqa: E402, F401
 
 config = context.config
 

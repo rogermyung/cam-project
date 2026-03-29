@@ -258,10 +258,20 @@ class TestRetryLogic:
         resp = httpx.Response(429, request=req)
         assert _is_retriable_error(httpx.HTTPStatusError("429", request=req, response=resp))
 
-    def test_500_not_retriable(self):
+    def test_500_is_retriable(self):
         req = httpx.Request("GET", "https://example.com")
         resp = httpx.Response(500, request=req)
-        assert not _is_retriable_error(httpx.HTTPStatusError("500", request=req, response=resp))
+        assert _is_retriable_error(httpx.HTTPStatusError("500", request=req, response=resp))
+
+    def test_503_is_retriable(self):
+        req = httpx.Request("GET", "https://example.com")
+        resp = httpx.Response(503, request=req)
+        assert _is_retriable_error(httpx.HTTPStatusError("503", request=req, response=resp))
+
+    def test_404_not_retriable(self):
+        req = httpx.Request("GET", "https://example.com")
+        resp = httpx.Response(404, request=req)
+        assert not _is_retriable_error(httpx.HTTPStatusError("404", request=req, response=resp))
 
     def test_value_error_not_retriable(self):
         assert not _is_retriable_error(ValueError("bad"))
@@ -295,6 +305,28 @@ class TestGetExistingKeys:
 
 
 class TestIngestTri:
+    @pytest.fixture(autouse=True)
+    def mock_entity_resolution(self, monkeypatch):
+        import uuid
+
+        from cam.entity.resolver import ResolveResult
+
+        fake_eid = uuid.uuid4()
+
+        def _fake_bulk_resolve(records, source, db, commit=True):
+            return [
+                ResolveResult(
+                    entity_id=fake_eid,
+                    canonical_name="Fake Entity",
+                    confidence=1.0,
+                    method="exact",
+                    needs_review=False,
+                )
+                for _ in records
+            ]
+
+        monkeypatch.setattr("cam.ingestion.epa.bulk_resolve", _fake_bulk_resolve)
+
     def test_ingests_all_rows(self, db):
         # CSV has 21 rows total: 16 for year 2022, 5 for year 2021
         result = ingest_tri(2022, db=db, csv_path=TRI_CSV)
@@ -408,24 +440,6 @@ class TestIngestTri:
             expected_lbs = raw_releases * Decimal("0.00220462")
             assert abs(lbs_stored - expected_lbs) < Decimal("1e-10")
 
-    def test_entity_resolution_uses_parent_company(self, db):
-        """Parent company name is preferred over facility name for resolution."""
-        entity = _make_entity(db, "EXXON MOBIL CORP")
-        from cam.entity.resolver import add_alias
-
-        add_alias(entity.id, "EXXON MOBIL CORP", "epa_tri", 1.0, db)
-
-        ingest_tri(2022, db=db, csv_path=TRI_CSV)
-
-        from sqlalchemy import select
-
-        linked = (
-            db.execute(select(Event).where(Event.source == "epa_tri", Event.entity_id == entity.id))
-            .scalars()
-            .all()
-        )
-        assert len(linked) > 0
-
 
 # ---------------------------------------------------------------------------
 # TestIngestEchoViolations
@@ -433,6 +447,28 @@ class TestIngestTri:
 
 
 class TestIngestEchoViolations:
+    @pytest.fixture(autouse=True)
+    def mock_entity_resolution(self, monkeypatch):
+        import uuid
+
+        from cam.entity.resolver import ResolveResult
+
+        fake_eid = uuid.uuid4()
+
+        def _fake_bulk_resolve(records, source, db, commit=True):
+            return [
+                ResolveResult(
+                    entity_id=fake_eid,
+                    canonical_name="Fake Entity",
+                    confidence=1.0,
+                    method="exact",
+                    needs_review=False,
+                )
+                for _ in records
+            ]
+
+        monkeypatch.setattr("cam.ingestion.epa.bulk_resolve", _fake_bulk_resolve)
+
     def test_ingests_all_cases(self, db):
         cases = _load_echo_fixture()
         result = ingest_echo_violations(date(2021, 1, 1), db=db, cases=cases)
@@ -586,25 +622,48 @@ class TestIngestEchoViolations:
         result = ingest_echo_violations(date(2022, 1, 1), db=db, client=client)
         assert result.ingested == 0
 
-    def test_entity_resolution_strips_facility_suffix(self, db):
-        entity = _make_entity(db, "EXXON MOBIL CORPORATION")
-        from cam.entity.resolver import add_alias
 
-        add_alias(entity.id, "EXXON MOBIL CORPORATION", "epa_echo", 1.0, db)
+# ---------------------------------------------------------------------------
+# Entity resolution integration tests (not mocked — use real resolver)
+# ---------------------------------------------------------------------------
 
-        cases = _load_echo_fixture()
-        ingest_echo_violations(date(2021, 1, 1), db=db, cases=cases)
 
-        from sqlalchemy import select
+def test_entity_resolution_uses_parent_company(db):
+    """Parent company name is preferred over facility name for resolution."""
+    entity = _make_entity(db, "EXXON MOBIL CORP")
+    from cam.entity.resolver import add_alias
 
-        linked = (
-            db.execute(
-                select(Event).where(Event.source == "epa_echo", Event.entity_id == entity.id)
-            )
-            .scalars()
-            .all()
-        )
-        assert len(linked) >= 1
+    add_alias(entity.id, "EXXON MOBIL CORP", "epa_tri", 1.0, db)
+
+    ingest_tri(2022, db=db, csv_path=TRI_CSV)
+
+    from sqlalchemy import select
+
+    linked = (
+        db.execute(select(Event).where(Event.source == "epa_tri", Event.entity_id == entity.id))
+        .scalars()
+        .all()
+    )
+    assert len(linked) > 0
+
+
+def test_entity_resolution_strips_facility_suffix(db):
+    entity = _make_entity(db, "EXXON MOBIL CORPORATION")
+    from cam.entity.resolver import add_alias
+
+    add_alias(entity.id, "EXXON MOBIL CORPORATION", "epa_echo", 1.0, db)
+
+    cases = _load_echo_fixture()
+    ingest_echo_violations(date(2021, 1, 1), db=db, cases=cases)
+
+    from sqlalchemy import select
+
+    linked = (
+        db.execute(select(Event).where(Event.source == "epa_echo", Event.entity_id == entity.id))
+        .scalars()
+        .all()
+    )
+    assert len(linked) >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -723,6 +782,28 @@ class TestComputeDivergence:
 
 
 class TestPerformance:
+    @pytest.fixture(autouse=True)
+    def mock_entity_resolution(self, monkeypatch):
+        import uuid
+
+        from cam.entity.resolver import ResolveResult
+
+        fake_eid = uuid.uuid4()
+
+        def _fake_bulk_resolve(records, source, db, commit=True):
+            return [
+                ResolveResult(
+                    entity_id=fake_eid,
+                    canonical_name="Fake Entity",
+                    confidence=1.0,
+                    method="exact",
+                    needs_review=False,
+                )
+                for _ in records
+            ]
+
+        monkeypatch.setattr("cam.ingestion.epa.bulk_resolve", _fake_bulk_resolve)
+
     def test_ingest_tri_fixture_within_time_limit(self, db):
         """TRI fixture must ingest in < 5 seconds."""
         start = time.monotonic()

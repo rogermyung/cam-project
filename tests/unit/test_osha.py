@@ -237,10 +237,30 @@ class TestRetryLogic:
         resp = httpx.Response(429, request=req)
         assert _is_retriable_error(httpx.HTTPStatusError("429", request=req, response=resp))
 
-    def test_500_is_not_retriable(self):
+    def test_500_is_retriable(self):
         req = httpx.Request("GET", "https://example.com")
         resp = httpx.Response(500, request=req)
-        assert not _is_retriable_error(httpx.HTTPStatusError("500", request=req, response=resp))
+        assert _is_retriable_error(httpx.HTTPStatusError("500", request=req, response=resp))
+
+    def test_503_is_retriable(self):
+        req = httpx.Request("GET", "https://example.com")
+        resp = httpx.Response(503, request=req)
+        assert _is_retriable_error(httpx.HTTPStatusError("503", request=req, response=resp))
+
+    def test_502_is_retriable(self):
+        req = httpx.Request("GET", "https://example.com")
+        resp = httpx.Response(502, request=req)
+        assert _is_retriable_error(httpx.HTTPStatusError("502", request=req, response=resp))
+
+    def test_504_is_retriable(self):
+        req = httpx.Request("GET", "https://example.com")
+        resp = httpx.Response(504, request=req)
+        assert _is_retriable_error(httpx.HTTPStatusError("504", request=req, response=resp))
+
+    def test_404_not_retriable(self):
+        req = httpx.Request("GET", "https://example.com")
+        resp = httpx.Response(404, request=req)
+        assert not _is_retriable_error(httpx.HTTPStatusError("404", request=req, response=resp))
 
     def test_value_error_not_retriable(self):
         assert not _is_retriable_error(ValueError("bad value"))
@@ -290,6 +310,28 @@ class TestDownloadBulkData:
 
 
 class TestIngestFromCsv:
+    @pytest.fixture(autouse=True)
+    def mock_entity_resolution(self, monkeypatch):
+        import uuid
+
+        from cam.entity.resolver import ResolveResult
+
+        fake_eid = uuid.uuid4()
+
+        def _fake_bulk_resolve(records, source, db, commit=True):
+            return [
+                ResolveResult(
+                    entity_id=fake_eid,
+                    canonical_name="Fake Entity",
+                    confidence=1.0,
+                    method="exact",
+                    needs_review=False,
+                )
+                for _ in records
+            ]
+
+        monkeypatch.setattr("cam.ingestion.osha.bulk_resolve", _fake_bulk_resolve)
+
     def test_ingests_all_rows(self, db):
         result = ingest_from_csv(SAMPLE_CSV, db=db)
         assert result.total == 100
@@ -412,56 +454,62 @@ class TestIngestFromCsv:
         described = [e for e in events if e.description and ":" in e.description]
         assert len(described) > 0
 
-    def test_entity_resolution_attempted(self, db):
-        """Entity resolution runs; resolved entities link event to entity_id."""
-        _make_entity(db, "ACME MANUFACTURING CO")
-        # Re-seed alias so resolver can match
-        from cam.entity.resolver import add_alias
 
-        entity = db.execute(
-            select(Entity).where(Entity.canonical_name == "ACME MANUFACTURING CO")
-        ).scalar_one()
-        add_alias(entity.id, "ACME MANUFACTURING CO", "osha", 1.0, db)
+# ---------------------------------------------------------------------------
+# Entity resolution integration tests (not mocked — use real resolver)
+# ---------------------------------------------------------------------------
 
-        ingest_from_csv(SAMPLE_CSV, db=db)
 
-        linked = (
-            db.execute(
-                select(Event).where(
-                    Event.source == "osha",
-                    Event.entity_id == entity.id,
-                )
+def test_entity_resolution_links_events(db):
+    """Entity resolution runs; resolved entities link event to entity_id."""
+    _make_entity(db, "ACME MANUFACTURING CO")
+    from cam.entity.resolver import add_alias
+
+    entity = db.execute(
+        select(Entity).where(Entity.canonical_name == "ACME MANUFACTURING CO")
+    ).scalar_one()
+    add_alias(entity.id, "ACME MANUFACTURING CO", "osha", 1.0, db)
+
+    ingest_from_csv(SAMPLE_CSV, db=db)
+
+    linked = (
+        db.execute(
+            select(Event).where(
+                Event.source == "osha",
+                Event.entity_id == entity.id,
             )
-            .scalars()
-            .all()
         )
-        assert len(linked) > 0
+        .scalars()
+        .all()
+    )
+    assert len(linked) > 0
 
-    def test_estab_name_suffix_stripped_for_resolution(self, db):
-        """Names like 'COMPANY - CITY' should resolve as 'COMPANY'."""
-        _make_entity(db, "AMAZON.COM SERVICES LLC")
-        from cam.entity.resolver import add_alias
 
-        entity = db.execute(
-            select(Entity).where(Entity.canonical_name == "AMAZON.COM SERVICES LLC")
-        ).scalar_one()
-        add_alias(entity.id, "AMAZON.COM SERVICES LLC", "osha", 1.0, db)
+def test_estab_name_suffix_stripped_for_resolution(db):
+    """Names like 'COMPANY - CITY' should resolve as 'COMPANY'."""
+    _make_entity(db, "AMAZON.COM SERVICES LLC")
+    from cam.entity.resolver import add_alias
 
-        ingest_from_csv(SAMPLE_CSV, db=db)
+    entity = db.execute(
+        select(Entity).where(Entity.canonical_name == "AMAZON.COM SERVICES LLC")
+    ).scalar_one()
+    add_alias(entity.id, "AMAZON.COM SERVICES LLC", "osha", 1.0, db)
 
-        # Rows with "AMAZON.COM SERVICES LLC - BALTIMORE" and "- SEATTLE"
-        # should resolve to the same entity after suffix stripping
-        linked = (
-            db.execute(
-                select(Event).where(
-                    Event.source == "osha",
-                    Event.entity_id == entity.id,
-                )
+    ingest_from_csv(SAMPLE_CSV, db=db)
+
+    # Rows with "AMAZON.COM SERVICES LLC - BALTIMORE" and "- SEATTLE"
+    # should resolve to the same entity after suffix stripping
+    linked = (
+        db.execute(
+            select(Event).where(
+                Event.source == "osha",
+                Event.entity_id == entity.id,
             )
-            .scalars()
-            .all()
         )
-        assert len(linked) >= 4  # at least 4 Amazon rows in fixture
+        .scalars()
+        .all()
+    )
+    assert len(linked) >= 4  # at least 4 Amazon rows in fixture
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +631,28 @@ class TestFetchRecentInspections:
 
 
 class TestPerformance:
+    @pytest.fixture(autouse=True)
+    def mock_entity_resolution(self, monkeypatch):
+        import uuid
+
+        from cam.entity.resolver import ResolveResult
+
+        fake_eid = uuid.uuid4()
+
+        def _fake_bulk_resolve(records, source, db, commit=True):
+            return [
+                ResolveResult(
+                    entity_id=fake_eid,
+                    canonical_name="Fake Entity",
+                    confidence=1.0,
+                    method="exact",
+                    needs_review=False,
+                )
+                for _ in records
+            ]
+
+        monkeypatch.setattr("cam.ingestion.osha.bulk_resolve", _fake_bulk_resolve)
+
     def test_ingest_csv_within_time_limit(self, db):
         """100-row fixture must ingest in < 5 seconds."""
         start = time.monotonic()

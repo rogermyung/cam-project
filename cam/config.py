@@ -88,6 +88,10 @@ class Settings(BaseSettings):
         default="https://www.sec.gov/Archives/edgar/full-index",
         description="Base URL for EDGAR quarterly full-index master.zip files",
     )
+    edgar_company_tickers_url: str = Field(
+        default="https://www.sec.gov/files/company_tickers.json",
+        description="URL for the SEC company tickers JSON (maps CIK → ticker/name)",
+    )
     edgar_max_index_quarters: int = Field(
         default=4,
         description=(

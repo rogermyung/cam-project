@@ -397,12 +397,12 @@ class TestFetchCompanyFilings:
         """If the old filings page fails, log a warning and continue."""
         amazon_data = _load_fixture("submissions_amazon.json")
 
-        # Use HTTPStatusError with status_code=500 so tenacity does NOT retry it
-        # — _is_retriable_error only retries 429, not other 4xx/5xx codes.
+        # Use HTTPStatusError with status_code=404 so tenacity does NOT retry it
+        # — _is_retriable_error retries 429/5xx, but not 4xx client errors.
         mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 500
+        mock_response.status_code = 404
         server_error = httpx.HTTPStatusError(
-            "500 Internal Server Error",
+            "404 Not Found",
             request=MagicMock(spec=httpx.Request),
             response=mock_response,
         )
@@ -605,11 +605,17 @@ class TestRetryLogic:
         exc = httpx.HTTPStatusError("rate limited", request=MagicMock(), response=resp)
         assert _is_retriable_error(exc) is True
 
-    def test_500_http_status_error_not_retriable(self):
+    def test_500_http_status_error_is_retriable(self):
         resp = MagicMock()
         resp.status_code = 500
         exc = httpx.HTTPStatusError("server error", request=MagicMock(), response=resp)
-        assert _is_retriable_error(exc) is False
+        assert _is_retriable_error(exc) is True
+
+    def test_503_http_status_error_is_retriable(self):
+        resp = MagicMock()
+        resp.status_code = 503
+        exc = httpx.HTTPStatusError("service unavailable", request=MagicMock(), response=resp)
+        assert _is_retriable_error(exc) is True
 
     def test_404_http_status_error_not_retriable(self):
         resp = MagicMock()

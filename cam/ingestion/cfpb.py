@@ -16,7 +16,8 @@ Data sources:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+import uuid
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -35,6 +36,9 @@ from tenacity import (
 from cam.config import get_settings
 from cam.db.models import Event
 from cam.entity.resolver import bulk_resolve
+from cam.ingestion.base import IngestResult
+from cam.ingestion.circuit_breaker import get_breaker
+from cam.ingestion.dlq import ERROR_DB_WRITE, ERROR_ENTITY_RESOLUTION, record_failure
 
 logger = logging.getLogger(__name__)
 
@@ -48,17 +52,6 @@ _CFPB_API_URL = "https://www.consumerfinance.gov/data-research/consumer-complain
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class IngestResult:
-    """Summary of a bulk ingestion run."""
-
-    total: int = 0
-    ingested: int = 0
-    skipped: int = 0
-    errors: int = 0
-    error_details: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -77,10 +70,16 @@ class ComplaintRate:
 
 
 def _is_retriable_error(exc: BaseException) -> bool:
-    """Return True for transient network errors and HTTP 429 rate-limits."""
+    """Return True for transient network errors and HTTP 429/5xx errors."""
     if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
         return True
-    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (
+        429,  # rate-limited
+        500,  # internal server error (transient)
+        502,  # bad gateway
+        503,  # service unavailable
+        504,  # gateway timeout
+    ):
         return True
     return False
 
@@ -100,6 +99,8 @@ def _get(
     *,
     client: httpx.Client | None = None,
 ) -> httpx.Response:
+    breaker = get_breaker("cfpb")
+
     @_make_retry_decorator()
     def _request() -> httpx.Response:
         if client is not None:
@@ -109,7 +110,7 @@ def _get(
         resp.raise_for_status()
         return resp
 
-    return _request()
+    return breaker.call(_request)
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +268,7 @@ def ingest_complaints(
     db: Session,
     client: httpx.Client | None = None,
     complaints: list[dict] | None = None,
+    run_id: uuid.UUID | None = None,
 ) -> IngestResult:
     """Ingest new complaints from the CFPB API.
 
@@ -277,8 +279,9 @@ def ingest_complaints(
     client:      Optional httpx.Client for testing.
     complaints:  Optional pre-fetched list of complaint dicts (for testing).
                  Each dict must have ``complaint_id`` and ``date_received`` keys.
+    run_id:      UUID for this run (used for DLQ entries).
     """
-    result = IngestResult()
+    result = IngestResult(run_id=run_id or uuid.uuid4())
 
     if complaints is None:
         # Paginate through the full result set
@@ -320,26 +323,57 @@ def ingest_complaints(
 
     for complaint, res in zip(to_process, resolved):
         complaint_id = complaint.get("complaint_id", "")
-        try:
-            event_date = _parse_date(complaint.get("date_received"))
-            product = (complaint.get("product") or "").strip()
-            issue = (complaint.get("issue") or "").strip()
 
-            event = Event(
-                entity_id=res.entity_id,
+        if res.entity_id is None and not res.needs_review:
+            failure = record_failure(
+                db,
                 source="cfpb_complaint",
-                event_type="complaint",
-                event_date=event_date,
-                penalty_usd=None,
-                description=f"{product}: {issue}" if product else issue or None,
-                raw_json={k: v for k, v in complaint.items()},
+                run_id=result.run_id,
+                raw_record=complaint,
+                error_type=ERROR_ENTITY_RESOLUTION,
+                exc=ValueError(
+                    f"No entity match for {complaint.get('company')!r} "
+                    f"(confidence={res.confidence:.2f})"
+                ),
+                raw_key=complaint_id or None,
             )
-            db.add(event)
-            result.ingested += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to ingest complaint %s: %s", complaint_id, exc)
+            if failure is not None:
+                result.dlq_ids.append(failure.id)
             result.errors += 1
-            result.error_details.append(f"complaint_id={complaint_id}: {exc}")
+            result.error_details.append(f"complaint_id={complaint_id}: entity resolution failed")
+        else:
+            try:
+                event_date = _parse_date(complaint.get("date_received"))
+                product = (complaint.get("product") or "").strip()
+                issue = (complaint.get("issue") or "").strip()
+
+                with db.begin_nested():  # SAVEPOINT
+                    event = Event(
+                        entity_id=res.entity_id,
+                        source="cfpb_complaint",
+                        event_type="complaint",
+                        event_date=event_date,
+                        penalty_usd=None,
+                        description=f"{product}: {issue}" if product else issue or None,
+                        raw_json={k: v for k, v in complaint.items()},
+                    )
+                    db.add(event)
+                result.ingested += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Failed to ingest complaint %s: %s", complaint_id, exc)
+                failure = record_failure(
+                    db,
+                    source="cfpb_complaint",
+                    run_id=result.run_id,
+                    raw_record=complaint,
+                    error_type=ERROR_DB_WRITE,
+                    exc=exc,
+                    raw_key=complaint_id or None,
+                )
+                if failure is not None:
+                    result.dlq_ids.append(failure.id)
+                result.errors += 1
+                result.error_details.append(f"complaint_id={complaint_id}: {exc}")
 
     db.commit()
     return result

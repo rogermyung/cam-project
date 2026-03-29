@@ -59,6 +59,28 @@ def db():
         yield session
 
 
+@pytest.fixture(autouse=True)
+def mock_warn_entity_resolution(monkeypatch):
+    """Patch bulk_resolve so WARN ingestion tests don't need real entities in the DB."""
+    from cam.entity.resolver import ResolveResult
+
+    fake_eid = uuid.uuid4()
+
+    def _fake_bulk_resolve(records, source, db, commit=True):
+        return [
+            ResolveResult(
+                entity_id=fake_eid,
+                canonical_name="Fake Entity",
+                confidence=1.0,
+                method="exact",
+                needs_review=False,
+            )
+            for _ in records
+        ]
+
+    monkeypatch.setattr("cam.ingestion.warn.bulk_resolve", _fake_bulk_resolve)
+
+
 # ---------------------------------------------------------------------------
 # Helper: fake httpx client
 # ---------------------------------------------------------------------------

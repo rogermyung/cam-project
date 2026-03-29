@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Integer,
     Numeric,
     String,
     Text,
@@ -118,3 +119,57 @@ class AlertScore(Base):
     __table_args__ = (UniqueConstraint("entity_id", "score_date", name="uq_alert_entity_date"),)
 
     entity = relationship("Entity", back_populates="alert_scores")
+
+
+class IngestFailure(Base):
+    """Dead letter queue: one row per failed record from any ingestion source.
+
+    A record lands here when:
+    - Entity resolution confidence is below the review threshold (hard fail)
+    - A DB write fails for a specific record
+    - A validation error prevents the record from being mapped
+    - An API error aborts processing for a record
+
+    Records with ``resolved_at`` set have been manually processed or dismissed.
+    Records with ``resolved_at = NULL`` are open and require operator attention.
+    """
+
+    __tablename__ = "ingest_failures"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source = Column(String(50), nullable=False)  # 'osha', 'edgar', 'epa_tri', etc.
+    run_id = Column(UUID(as_uuid=True), nullable=False)
+    raw_key = Column(Text, nullable=True)  # idempotency key from the source record
+    raw_json = Column(JSONB, nullable=False)
+    error_type = Column(
+        String(50), nullable=False
+    )  # 'entity_resolution' | 'validation' | 'db_write' | 'api_error'
+    error_msg = Column(Text, nullable=False)
+    traceback = Column(Text, nullable=True)
+    retry_count = Column(Integer, nullable=False, default=0)
+    last_retry = Column(DateTime(timezone=True), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class IngestCheckpoint(Base):
+    """Progress cursor for long-running ingestion runs.
+
+    Written periodically (every N records) so a restart can resume mid-run
+    rather than starting from the beginning.  ``completed_at`` is set when
+    the run finishes successfully.
+    """
+
+    __tablename__ = "ingest_checkpoints"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source = Column(String(50), nullable=False)
+    run_id = Column(UUID(as_uuid=True), nullable=False)
+    checkpoint = Column(JSONB, nullable=False)  # source-specific cursor dict
+    records_ok = Column(Integer, nullable=False, default=0)
+    records_err = Column(Integer, nullable=False, default=0)
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (UniqueConstraint("source", "run_id", name="uq_checkpoint_source_run"),)

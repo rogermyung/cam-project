@@ -20,8 +20,8 @@ import io
 import logging
 import math
 import tempfile
+import uuid
 import zipfile
-from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -40,6 +40,9 @@ from tenacity import (
 
 from cam.db.models import Event
 from cam.entity.resolver import bulk_resolve
+from cam.ingestion.base import IngestResult
+from cam.ingestion.circuit_breaker import get_breaker
+from cam.ingestion.dlq import ERROR_DB_WRITE, ERROR_ENTITY_RESOLUTION, record_failure
 
 logger = logging.getLogger(__name__)
 
@@ -82,27 +85,22 @@ _ECHO_CASE_LIST_KEY = "CaseList"
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class IngestResult:
-    """Summary of a bulk ingestion run."""
-
-    total: int = 0
-    ingested: int = 0
-    skipped: int = 0
-    errors: int = 0
-    error_details: list[str] = field(default_factory=list)
-
-
 # ---------------------------------------------------------------------------
 # Retry helpers
 # ---------------------------------------------------------------------------
 
 
 def _is_retriable_error(exc: BaseException) -> bool:
-    """Return True for transient network errors and HTTP 429 rate-limits."""
+    """Return True for transient network errors and HTTP 429/5xx errors."""
     if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
         return True
-    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (
+        429,  # rate-limited
+        500,  # internal server error (transient)
+        502,  # bad gateway
+        503,  # service unavailable
+        504,  # gateway timeout
+    ):
         return True
     return False
 
@@ -122,6 +120,8 @@ def _get(
     *,
     client: httpx.Client | None = None,
 ) -> httpx.Response:
+    breaker = get_breaker("epa")
+
     @_make_retry_decorator()
     def _request() -> httpx.Response:
         if client is not None:
@@ -131,7 +131,7 @@ def _get(
         resp.raise_for_status()
         return resp
 
-    return _request()
+    return breaker.call(_request)
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +219,7 @@ def ingest_tri(
     db: Session,
     csv_path: Path | None = None,
     client: httpx.Client | None = None,
+    run_id: uuid.UUID | None = None,
 ) -> IngestResult:
     """Ingest TRI annual release data. Store as event_type='tri_release'.
 
@@ -228,8 +229,9 @@ def ingest_tri(
     db:       SQLAlchemy session.
     csv_path: Optional pre-downloaded CSV path; downloads if not provided.
     client:   Optional httpx.Client for testing.
+    run_id:   UUID for this run (used for DLQ entries).
     """
-    result = IngestResult()
+    result = IngestResult(run_id=run_id or uuid.uuid4())
 
     if csv_path is None:
         csv_path = _download_tri_csv(year, client=client)
@@ -278,37 +280,69 @@ def ingest_tri(
 
     for row, res in zip(to_process, resolved):
         tri_key = row.get("_tri_key", "")
-        try:
-            total_releases = _parse_decimal(row.get(_TRI_TOTAL_RELEASES_COL))
-            unit = (row.get(_TRI_UNIT_COL) or "Pounds").strip()
-            total_releases_lbs = _normalize_to_lbs(total_releases, unit)
-            event_year = int((row.get(_TRI_YEAR_COL) or "0").strip())
-            event_date = date(event_year, 12, 31) if event_year > 0 else None
 
-            raw = {k: v for k, v in row.items() if not k.startswith("_")}
-            raw["tri_key"] = tri_key
-            if total_releases_lbs is not None:
-                raw["total_releases_lbs"] = str(total_releases_lbs)
-
-            event = Event(
-                entity_id=res.entity_id,
+        if res.entity_id is None and not res.needs_review:
+            failure = record_failure(
+                db,
                 source="epa_tri",
-                event_type="tri_release",
-                event_date=event_date,
-                penalty_usd=None,  # TRI has no penalty; releases are self-reported
-                description=(
-                    f"{row.get(_TRI_CHEMICAL_COL, '').strip()} release: {total_releases} {unit}"
-                    if total_releases is not None
-                    else row.get(_TRI_CHEMICAL_COL, "").strip()
+                run_id=result.run_id,
+                raw_record={k: v for k, v in row.items() if not k.startswith("_")},
+                error_type=ERROR_ENTITY_RESOLUTION,
+                exc=ValueError(
+                    f"No entity match for {row.get(_TRI_FACILITY_NAME_COL)!r} "
+                    f"(confidence={res.confidence:.2f})"
                 ),
-                raw_json=raw,
+                raw_key=tri_key or None,
             )
-            db.add(event)
-            result.ingested += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to ingest TRI record %s: %s", tri_key, exc)
+            if failure is not None:
+                result.dlq_ids.append(failure.id)
             result.errors += 1
-            result.error_details.append(f"tri_key={tri_key}: {exc}")
+            result.error_details.append(f"tri_key={tri_key}: entity resolution failed")
+        else:
+            try:
+                total_releases = _parse_decimal(row.get(_TRI_TOTAL_RELEASES_COL))
+                unit = (row.get(_TRI_UNIT_COL) or "Pounds").strip()
+                total_releases_lbs = _normalize_to_lbs(total_releases, unit)
+                event_year = int((row.get(_TRI_YEAR_COL) or "0").strip())
+                event_date = date(event_year, 12, 31) if event_year > 0 else None
+
+                raw = {k: v for k, v in row.items() if not k.startswith("_")}
+                raw["tri_key"] = tri_key
+                if total_releases_lbs is not None:
+                    raw["total_releases_lbs"] = str(total_releases_lbs)
+
+                with db.begin_nested():  # SAVEPOINT
+                    event = Event(
+                        entity_id=res.entity_id,
+                        source="epa_tri",
+                        event_type="tri_release",
+                        event_date=event_date,
+                        penalty_usd=None,
+                        description=(
+                            f"{row.get(_TRI_CHEMICAL_COL, '').strip()} release: "
+                            f"{total_releases} {unit}"
+                            if total_releases is not None
+                            else row.get(_TRI_CHEMICAL_COL, "").strip()
+                        ),
+                        raw_json=raw,
+                    )
+                    db.add(event)
+                result.ingested += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Failed to ingest TRI record %s: %s", tri_key, exc)
+                failure = record_failure(
+                    db,
+                    source="epa_tri",
+                    run_id=result.run_id,
+                    raw_record={k: v for k, v in row.items() if not k.startswith("_")},
+                    error_type=ERROR_DB_WRITE,
+                    exc=exc,
+                    raw_key=tri_key or None,
+                )
+                if failure is not None:
+                    result.dlq_ids.append(failure.id)
+                result.errors += 1
+                result.error_details.append(f"tri_key={tri_key}: {exc}")
 
     db.commit()
     return result
@@ -393,6 +427,7 @@ def ingest_echo_violations(
     db: Session,
     client: httpx.Client | None = None,
     cases: list[dict] | None = None,
+    run_id: uuid.UUID | None = None,
 ) -> IngestResult:
     """Ingest EPA enforcement actions from ECHO.
 
@@ -402,8 +437,9 @@ def ingest_echo_violations(
     db:         SQLAlchemy session.
     client:     Optional httpx.Client for testing.
     cases:      Optional pre-fetched list of case dicts (for testing).
+    run_id:     UUID for this run (used for DLQ entries).
     """
-    result = IngestResult()
+    result = IngestResult(run_id=run_id or uuid.uuid4())
 
     if cases is None:
         cases = _fetch_echo_cases(since_date, client=client)
@@ -433,25 +469,56 @@ def ingest_echo_violations(
 
     for case, res in zip(to_process, resolved):
         activity_id = case.get("activity_id", "")
-        try:
-            penalty = _parse_decimal(case.get("penalty_assessed"))
-            event_date = _parse_date(case.get("action_date"))
 
-            event = Event(
-                entity_id=res.entity_id,
+        if res.entity_id is None and not res.needs_review:
+            failure = record_failure(
+                db,
                 source="epa_echo",
-                event_type="violation",
-                event_date=event_date,
-                penalty_usd=penalty,
-                description=case.get("description"),
-                raw_json={**case, "activity_id": activity_id},
+                run_id=result.run_id,
+                raw_record=case,
+                error_type=ERROR_ENTITY_RESOLUTION,
+                exc=ValueError(
+                    f"No entity match for {case.get('facility_name')!r} "
+                    f"(confidence={res.confidence:.2f})"
+                ),
+                raw_key=activity_id or None,
             )
-            db.add(event)
-            result.ingested += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to ingest ECHO case %s: %s", activity_id, exc)
+            if failure is not None:
+                result.dlq_ids.append(failure.id)
             result.errors += 1
-            result.error_details.append(f"activity_id={activity_id}: {exc}")
+            result.error_details.append(f"activity_id={activity_id}: entity resolution failed")
+        else:
+            try:
+                penalty = _parse_decimal(case.get("penalty_assessed"))
+                event_date = _parse_date(case.get("action_date"))
+
+                with db.begin_nested():  # SAVEPOINT
+                    event = Event(
+                        entity_id=res.entity_id,
+                        source="epa_echo",
+                        event_type="violation",
+                        event_date=event_date,
+                        penalty_usd=penalty,
+                        description=case.get("description"),
+                        raw_json={**case, "activity_id": activity_id},
+                    )
+                    db.add(event)
+                result.ingested += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Failed to ingest ECHO case %s: %s", activity_id, exc)
+                failure = record_failure(
+                    db,
+                    source="epa_echo",
+                    run_id=result.run_id,
+                    raw_record=case,
+                    error_type=ERROR_DB_WRITE,
+                    exc=exc,
+                    raw_key=activity_id or None,
+                )
+                if failure is not None:
+                    result.dlq_ids.append(failure.id)
+                result.errors += 1
+                result.error_details.append(f"activity_id={activity_id}: {exc}")
 
     db.commit()
     return result
