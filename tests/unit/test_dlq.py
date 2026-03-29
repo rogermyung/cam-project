@@ -106,6 +106,58 @@ def test_record_failure_is_best_effort(db):
     assert result is None  # graceful degradation
 
 
+def test_record_failure_savepoint_isolation(engine):
+    """A failed DLQ write must not corrupt the outer session.
+
+    Simulates a DLQ write failure (via a mock that raises inside begin_nested)
+    and verifies the outer session can still commit successfully.
+    """
+    from cam.db.models import IngestFailure as IF
+
+    SessionLocal = sessionmaker(bind=engine)
+    session = SessionLocal()
+
+    try:
+        # Write a sentinel row before the "failed" DLQ write
+        sentinel = IF(
+            id=uuid.uuid4(),
+            source="sentinel_source",
+            run_id=uuid.uuid4(),
+            raw_key=None,
+            raw_json={"note": "before dlq failure"},
+            error_type=ERROR_ENTITY_RESOLUTION,
+            error_msg="sentinel",
+            traceback="",
+        )
+        session.add(sentinel)
+        session.flush()
+
+        # Now simulate a DLQ write failure (add raises inside begin_nested)
+        with patch("cam.ingestion.dlq.IngestFailure") as mock_cls:
+            mock_cls.side_effect = RuntimeError("simulated DLQ failure")
+            result = record_failure(
+                session,
+                source="osha",
+                run_id=uuid.uuid4(),
+                raw_record={"estab_name": "FailCorp"},
+                error_type=ERROR_ENTITY_RESOLUTION,
+                exc=ValueError("entity missing"),
+            )
+
+        # DLQ write failed → None returned, not raised
+        assert result is None
+
+        # Outer session is still usable — the sentinel row can be committed
+        session.commit()
+
+        refreshed = session.get(IF, sentinel.id)
+        assert refreshed is not None
+        assert refreshed.source == "sentinel_source"
+    finally:
+        session.rollback()
+        session.close()
+
+
 def test_record_failure_unknown_error_type(db):
     """Unknown error_type is coerced to 'validation' with a warning."""
     run_id = uuid.uuid4()

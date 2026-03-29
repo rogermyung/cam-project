@@ -70,10 +70,16 @@ class ComplaintRate:
 
 
 def _is_retriable_error(exc: BaseException) -> bool:
-    """Return True for transient network errors and HTTP 429 rate-limits."""
+    """Return True for transient network errors and HTTP 429/5xx errors."""
     if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
         return True
-    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (
+        429,  # rate-limited
+        500,  # internal server error (transient)
+        502,  # bad gateway
+        503,  # service unavailable
+        504,  # gateway timeout
+    ):
         return True
     return False
 

@@ -121,8 +121,12 @@ def record_failure(
             error_msg=str(exc),
             traceback=tb.format_exc(),
         )
-        db.add(failure)
-        db.flush()  # get the id without committing; caller owns the transaction
+        # Use a SAVEPOINT so that a failed DLQ write (e.g. table missing, DB
+        # hiccup) only rolls back the SAVEPOINT — not the outer transaction.
+        # Without this, a failed db.flush() leaves the session in
+        # PendingRollbackError and breaks all subsequent DB access in the run.
+        with db.begin_nested():
+            db.add(failure)
         return failure
     except Exception as dlq_exc:  # noqa: BLE001
         # Last resort: print to stderr so the error is not silently lost

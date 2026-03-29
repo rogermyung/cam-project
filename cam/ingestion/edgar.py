@@ -93,10 +93,17 @@ def _is_retriable_error(exc: BaseException) -> bool:
     Retriable conditions:
     - Network / timeout errors (transient connectivity issues)
     - HTTP 429 (EDGAR rate limit exceeded)
+    - HTTP 5xx (transient server errors: 500, 502, 503, 504)
     """
     if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
         return True
-    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (
+        429,  # rate-limited
+        500,  # internal server error (transient)
+        502,  # bad gateway
+        503,  # service unavailable
+        504,  # gateway timeout
+    ):
         return True
     return False
 

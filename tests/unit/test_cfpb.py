@@ -208,10 +208,34 @@ class TestRetryLogic:
         exc = httpx.HTTPStatusError("rate limited", request=MagicMock(), response=resp)
         assert _is_retriable_error(exc)
 
-    def test_500_not_retriable(self):
+    def test_500_is_retriable(self):
         resp = MagicMock()
         resp.status_code = 500
         exc = httpx.HTTPStatusError("server error", request=MagicMock(), response=resp)
+        assert _is_retriable_error(exc)
+
+    def test_503_is_retriable(self):
+        resp = MagicMock()
+        resp.status_code = 503
+        exc = httpx.HTTPStatusError("service unavailable", request=MagicMock(), response=resp)
+        assert _is_retriable_error(exc)
+
+    def test_502_is_retriable(self):
+        resp = MagicMock()
+        resp.status_code = 502
+        exc = httpx.HTTPStatusError("bad gateway", request=MagicMock(), response=resp)
+        assert _is_retriable_error(exc)
+
+    def test_504_is_retriable(self):
+        resp = MagicMock()
+        resp.status_code = 504
+        exc = httpx.HTTPStatusError("gateway timeout", request=MagicMock(), response=resp)
+        assert _is_retriable_error(exc)
+
+    def test_404_not_retriable(self):
+        resp = MagicMock()
+        resp.status_code = 404
+        exc = httpx.HTTPStatusError("not found", request=MagicMock(), response=resp)
         assert not _is_retriable_error(exc)
 
     def test_value_error_not_retriable(self):

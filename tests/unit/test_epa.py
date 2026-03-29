@@ -258,10 +258,20 @@ class TestRetryLogic:
         resp = httpx.Response(429, request=req)
         assert _is_retriable_error(httpx.HTTPStatusError("429", request=req, response=resp))
 
-    def test_500_not_retriable(self):
+    def test_500_is_retriable(self):
         req = httpx.Request("GET", "https://example.com")
         resp = httpx.Response(500, request=req)
-        assert not _is_retriable_error(httpx.HTTPStatusError("500", request=req, response=resp))
+        assert _is_retriable_error(httpx.HTTPStatusError("500", request=req, response=resp))
+
+    def test_503_is_retriable(self):
+        req = httpx.Request("GET", "https://example.com")
+        resp = httpx.Response(503, request=req)
+        assert _is_retriable_error(httpx.HTTPStatusError("503", request=req, response=resp))
+
+    def test_404_not_retriable(self):
+        req = httpx.Request("GET", "https://example.com")
+        resp = httpx.Response(404, request=req)
+        assert not _is_retriable_error(httpx.HTTPStatusError("404", request=req, response=resp))
 
     def test_value_error_not_retriable(self):
         assert not _is_retriable_error(ValueError("bad"))
