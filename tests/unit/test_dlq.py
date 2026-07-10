@@ -90,6 +90,58 @@ def test_record_failure_writes_row(db):
     assert failure.retry_count == 0
 
 
+def test_record_failure_traceback_from_raised_exception(db):
+    """A raised-and-caught exception records its real traceback."""
+    try:
+        raise ValueError("boom from a real raise")
+    except ValueError as exc:
+        failure = record_failure(
+            db,
+            source="osha",
+            run_id=uuid.uuid4(),
+            raw_record={"estab_name": "Test Corp"},
+            error_type=ERROR_DB_WRITE,
+            exc=exc,
+        )
+    db.commit()
+
+    assert failure is not None
+    assert failure.traceback
+    assert "NoneType: None" not in failure.traceback
+    # The real frame where the exception was raised must appear.
+    assert "boom from a real raise" in failure.traceback
+    assert "test_record_failure_traceback_from_raised_exception" in failure.traceback
+
+
+def test_record_failure_traceback_from_constructed_exception(db):
+    """A constructed-but-never-raised exception still records a useful traceback.
+
+    Entity-resolution failures pass a freshly built ValueError that was never
+    raised, so it has no ``__traceback__``.  The DLQ row must not degrade to the
+    useless ``'NoneType: None'`` that ``traceback.format_exc()`` would produce.
+    """
+    exc = ValueError("no entity match")  # never raised → exc.__traceback__ is None
+    assert exc.__traceback__ is None
+
+    failure = record_failure(
+        db,
+        source="osha",
+        run_id=uuid.uuid4(),
+        raw_record={"estab_name": "Test Corp"},
+        error_type=ERROR_ENTITY_RESOLUTION,
+        exc=exc,
+    )
+    db.commit()
+
+    assert failure is not None
+    assert failure.traceback
+    assert failure.traceback.strip() != "NoneType: None"
+    assert "NoneType: None" not in failure.traceback
+    # The message and the recording call site should both be captured.
+    assert "no entity match" in failure.traceback
+    assert "record_failure" in failure.traceback
+
+
 def test_record_failure_is_best_effort(db):
     """record_failure must not raise even if the DB session is broken."""
     bad_db = MagicMock()

@@ -63,13 +63,9 @@ class Settings(BaseSettings):
     )
 
     # CFPB ingestion (M5)
-    cfpb_page_size: int = Field(
-        default=1000,
-        description=(
-            "Records per page when paginating the CFPB complaints API. "
-            "1 000 is a safe sweet spot (~10× fewer round-trips than 100). "
-            "Reduce on memory-constrained runners; max accepted by API is 10 000."
-        ),
+    cfpb_bulk_url: str = Field(
+        default="https://files.consumerfinance.gov/ccdb/complaints.csv.zip",
+        description="URL for the CFPB complaints bulk CSV download (ZIP archive, updated daily)",
     )
 
     # WARN Act ingestion (M11)
@@ -91,6 +87,10 @@ class Settings(BaseSettings):
     edgar_company_tickers_url: str = Field(
         default="https://www.sec.gov/files/company_tickers.json",
         description="URL for the SEC company tickers JSON (maps CIK → ticker/name)",
+    )
+    edgar_http_timeout: int = Field(
+        default=30,
+        description="HTTP timeout in seconds for SEC EDGAR requests (e.g. the company-tickers seed fetch)",
     )
     edgar_max_index_quarters: int = Field(
         default=4,

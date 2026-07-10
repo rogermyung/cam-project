@@ -42,6 +42,7 @@ logging.basicConfig(
 logger = logging.getLogger("cam.entrypoint")
 
 _ALL_SOURCES = ["osha", "epa", "cfpb", "warn", "edgar"]
+_SEED_DEFAULT_BATCH_SIZE = 500  # mirrors cam.entity.seed.DEFAULT_BATCH_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +272,30 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# seed
+# ---------------------------------------------------------------------------
+
+
+def _cmd_seed(args: argparse.Namespace) -> int:
+    """Seed the entities table from SEC EDGAR company_tickers.json."""
+    from cam.entity.seed import run
+
+    batch_size: int = args.batch_size  # default set by argparse
+    dry_run: bool = args.dry_run
+    logger.info("Seed starting — batch_size=%d dry_run=%s", batch_size, dry_run)
+
+    try:
+        inserted, skipped = run(batch_size=batch_size, dry_run=dry_run)
+    except Exception as exc:
+        logger.error("Seed failed: %s", exc, exc_info=True)
+        return 1
+
+    prefix = "[DRY RUN] " if dry_run else ""
+    logger.info("%sSeed complete — %d inserted, %d skipped.", prefix, inserted, skipped)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # CLI definition
 # ---------------------------------------------------------------------------
 
@@ -387,6 +412,30 @@ Examples:
         help="Digest covers alerts on or after this date (default: 7 days ago)",
     )
 
+    # ---- seed ----
+    p_seed = sub.add_parser(
+        "seed",
+        help="Seed the entities table from SEC EDGAR company_tickers.json",
+        description=(
+            "Fetches SEC EDGAR's company_tickers.json (~10 000 companies) and "
+            "writes Entity + EntityAlias rows (source='sec_seed') into the "
+            "database.  Idempotent — rows that already exist are skipped.  "
+            "Must be run once on a fresh database before the ingest pipeline."
+        ),
+    )
+    p_seed.add_argument(
+        "--batch-size",
+        type=int,
+        default=_SEED_DEFAULT_BATCH_SIZE,
+        metavar="N",
+        help=f"Number of rows per DB commit (default: {_SEED_DEFAULT_BATCH_SIZE})",
+    )
+    p_seed.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Fetch and count without writing anything to the database",
+    )
+
     return parser
 
 
@@ -409,6 +458,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_score(args)
     if args.command == "export":
         return _cmd_export(args)
+    if args.command == "seed":
+        return _cmd_seed(args)
 
     parser.print_help()
     return 1

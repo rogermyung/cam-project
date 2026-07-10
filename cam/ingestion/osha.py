@@ -262,24 +262,13 @@ def ingest_from_csv(
                 filtered.append(row)
         rows = filtered
 
-    # --- Idempotency: skip already-ingested activity_nrs ---
-    existing_nrs = _get_existing_activity_nrs(db)
-
-    to_process = []
-    for row in rows:
-        nr = row.get("activity_nr", "").strip()
-        if nr and nr in existing_nrs:
-            result.skipped += 1
-        else:
-            to_process.append(row)
-
-    if not to_process:
-        complete_checkpoint(db, "osha", result.run_id)
-        db.commit()
-        return result
-
     # --- Resume from checkpoint ---
-    # The cursor dict stores {offset, records_ok, records_err} so all three are
+    # The cursor's ``offset`` is an index into the *stable* since-filtered
+    # ``rows`` list, i.e. before idempotency removal.  Indexing a stable
+    # sequence is what makes resume correct: idempotency filtering shrinks the
+    # work list from run to run, so an offset into the post-filter list would
+    # drift after a partial run and silently skip unprocessed rows.
+    # The cursor dict also stores {records_ok, records_err} so all three are
     # available after a crash without needing a separate DB column read.
     start_offset = 0
     if resume:
@@ -291,16 +280,35 @@ def ingest_from_csv(
             result.ingested = cursor.get("records_ok", 0)
             result.errors = cursor.get("records_err", 0)
 
-    to_process = to_process[start_offset:]
+    work_rows = rows[start_offset:]
+
+    if not work_rows:
+        complete_checkpoint(db, "osha", result.run_id)
+        db.commit()
+        return result
+
+    # --- Idempotency: skip already-ingested activity_nrs ---
+    # Applied per-record over the stable window (not by pre-filtering the whole
+    # file) so the positional offset above stays aligned with ``rows``.  Each
+    # entry in ``pending`` pairs a row we will attempt with its absolute index
+    # in ``rows``, which is what gets checkpointed.
+    existing_nrs = _get_existing_activity_nrs(db)
+    pending: list[tuple[int, dict[str, str]]] = []
+    for i, row in enumerate(work_rows):
+        nr = row.get("activity_nr", "").strip()
+        if nr and nr in existing_nrs:
+            result.skipped += 1
+        else:
+            pending.append((start_offset + i, row))
 
     # --- Bulk entity resolution ---
-    # commit=False: ingest_from_csv owns the transaction boundary.
-    resolve_records = [{"name": _clean_estab_name(r.get("estab_name", ""))} for r in to_process]
+    # commit=False: ingest_from_csv owns the transaction boundary.  Resolve only
+    # the rows we will actually attempt to ingest (skipped rows are excluded).
+    resolve_records = [{"name": _clean_estab_name(r.get("estab_name", ""))} for _, r in pending]
     resolved = bulk_resolve(resolve_records, "osha", db, commit=False)
 
     # --- Insert events with per-entity savepoint isolation ---
-    for i, (row, res) in enumerate(zip(to_process, resolved)):
-        absolute_offset = start_offset + i
+    for (absolute_offset, row), res in zip(pending, resolved):
         nr = row.get("activity_nr", "").strip()
 
         # Entity resolution failure → DLQ
@@ -367,7 +375,7 @@ def ingest_from_csv(
             )
 
     complete_checkpoint(db, "osha", result.run_id)
-    result.checkpoint = {"offset": start_offset + len(to_process)}
+    result.checkpoint = {"offset": len(rows)}
     db.commit()
     return result
 

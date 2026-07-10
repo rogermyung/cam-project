@@ -21,7 +21,7 @@ def test_config_loads_with_required_vars():
     with patch.dict(os.environ, _REQUIRED, clear=True):
         from cam.config import Settings
 
-        s = Settings()
+        s = Settings(_env_file=None)
         assert s.database_url == "postgresql://cam:cam@localhost:5432/cam"
         assert s.edgar_user_agent == "test@example.org"
 
@@ -33,7 +33,7 @@ def test_config_raises_on_missing_database_url():
         from cam.config import Settings
 
         with pytest.raises(ValidationError):
-            Settings()
+            Settings(_env_file=None)
 
 
 def test_config_raises_on_missing_edgar_user_agent():
@@ -43,7 +43,7 @@ def test_config_raises_on_missing_edgar_user_agent():
         from cam.config import Settings
 
         with pytest.raises(ValidationError):
-            Settings()
+            Settings(_env_file=None)
 
 
 def test_config_api_auth_token_is_optional():
@@ -51,7 +51,7 @@ def test_config_api_auth_token_is_optional():
     with patch.dict(os.environ, _REQUIRED, clear=True):
         from cam.config import Settings
 
-        s = Settings()
+        s = Settings(_env_file=None)
         assert s.api_auth_token is None
 
 
@@ -60,7 +60,7 @@ def test_config_api_auth_token_reads_from_env():
     with patch.dict(os.environ, {**_REQUIRED, "API_AUTH_TOKEN": "secret"}, clear=True):
         from cam.config import Settings
 
-        s = Settings()
+        s = Settings(_env_file=None)
         assert s.api_auth_token == "secret"
 
 
@@ -69,7 +69,7 @@ def test_config_defaults():
     with patch.dict(os.environ, _REQUIRED, clear=True):
         from cam.config import Settings
 
-        s = Settings()
+        s = Settings(_env_file=None)
         assert s.alert_threshold_watch == pytest.approx(0.40)
         assert s.alert_threshold_elevated == pytest.approx(0.65)
         assert s.alert_threshold_critical == pytest.approx(0.80)
@@ -89,6 +89,6 @@ def test_config_env_var_override():
     with patch.dict(os.environ, env, clear=True):
         from cam.config import Settings
 
-        s = Settings()
+        s = Settings(_env_file=None)
         assert s.alert_threshold_watch == pytest.approx(0.30)
         assert s.alert_threshold_critical == pytest.approx(0.90)

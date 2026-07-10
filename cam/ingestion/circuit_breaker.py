@@ -92,6 +92,11 @@ class CircuitBreaker:
         self._state = BreakerState.CLOSED
         self._consecutive_failures = 0
         self._opened_at: float | None = None
+        # True while a single HALF_OPEN probe request is executing.  Guards the
+        # "single probe" recovery semantics under concurrency: additional callers
+        # that arrive while a probe is in flight fail fast instead of all hitting
+        # the recovering API at once.
+        self._probe_in_flight = False
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -109,11 +114,18 @@ class CircuitBreaker:
         Raises CircuitOpenError immediately when OPEN (no network call).
         Updates internal state based on success or failure.
         """
+        probing = False
         with self._lock:
             state = self._current_state()
             if state == BreakerState.OPEN:
                 raise CircuitOpenError(self.name)
             if state == BreakerState.HALF_OPEN:
+                if self._probe_in_flight:
+                    # Another caller is already probing recovery — fail fast so
+                    # only a single probe reaches the recovering API.
+                    raise CircuitOpenError(self.name)
+                self._probe_in_flight = True
+                probing = True
                 logger.info("circuit_breaker source=%s state=HALF_OPEN probing", self.name)
 
         try:
@@ -123,6 +135,10 @@ class CircuitBreaker:
         except Exception:
             self._on_failure()
             raise
+        finally:
+            if probing:
+                with self._lock:
+                    self._probe_in_flight = False
 
     def reset(self) -> None:
         """Manually reset the breaker to CLOSED (for operator use)."""
@@ -130,6 +146,7 @@ class CircuitBreaker:
             self._state = BreakerState.CLOSED
             self._consecutive_failures = 0
             self._opened_at = None
+            self._probe_in_flight = False
         logger.info("circuit_breaker source=%s manually reset to CLOSED", self.name)
 
     # ------------------------------------------------------------------

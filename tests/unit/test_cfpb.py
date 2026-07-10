@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import json
+import csv
+import io
 import time
 import uuid
+import zipfile
+from contextlib import contextmanager
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -19,19 +22,22 @@ from cam.db.models import Base, Entity, Event
 from cam.ingestion.cfpb import (
     ComplaintRate,
     _clean_company_name,
-    _fetch_complaints_page,
+    _csv_row_to_complaint,
+    _fetch_bulk_complaints,
     _get_existing_complaint_ids,
-    _hits_to_complaints,
     _is_retriable_error,
+    _parse_bulk_zip,
     _parse_date,
     _parse_decimal,
+    _stream_to_tempfile,
     compute_complaint_rate,
     detect_complaint_spike,
     ingest_complaints,
 )
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "cfpb"
-COMPLAINTS_FIXTURE = FIXTURES_DIR / "complaints_sample.json"
+COMPLAINTS_CSV = FIXTURES_DIR / "complaints_sample.csv"
+COMPLAINTS_ZIP = FIXTURES_DIR / "complaints_sample.zip"
 
 
 # ---------------------------------------------------------------------------
@@ -55,27 +61,63 @@ def _make_entity(db: Session, name: str) -> Entity:
     return e
 
 
-def _make_response(body) -> MagicMock:
+def _make_zip_response(csv_content: str | bytes) -> MagicMock:
+    """Return a mock httpx.Response whose .content is a ZIP containing the CSV.
+
+    Used by ``TestParseBulkZip`` which calls ``_parse_bulk_zip(bytes, ...)``
+    directly; NOT used by the streaming-path tests.
+    """
+    if isinstance(csv_content, str):
+        csv_content = csv_content.encode("utf-8")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("complaints.csv", csv_content)
+    zip_bytes = buf.getvalue()
+
     mock = MagicMock(spec=httpx.Response)
-    if isinstance(body, (bytes, bytearray)):
-        mock.content = body
-        mock.json.return_value = json.loads(body)
-    else:
-        mock.json.return_value = body
-        mock.content = json.dumps(body).encode()
+    mock.content = zip_bytes
     mock.raise_for_status.return_value = None
     return mock
 
 
-def _load_fixture() -> dict:
-    return json.loads(COMPLAINTS_FIXTURE.read_text())
+def _make_streaming_client(zip_bytes: bytes) -> MagicMock:
+    """Return a mock httpx.Client whose .stream() context manager yields a
+    streaming-response mock with iter_bytes() returning the zip in one chunk.
+
+    This mirrors the ``client.stream("GET", url, timeout=...)`` usage inside
+    ``_stream_to_tempfile``.
+    """
+    # Build the streaming response mock
+    stream_resp = MagicMock()
+    stream_resp.raise_for_status.return_value = None
+    stream_resp.iter_bytes.return_value = iter([zip_bytes])
+
+    # Make client.stream(...) a context manager that yields stream_resp
+    @contextmanager
+    def _stream_ctx(*args, **kwargs):
+        yield stream_resp
+
+    client = MagicMock(spec=httpx.Client)
+    client.stream.side_effect = _stream_ctx
+    return client
+
+
+def _fixture_csv_text() -> str:
+    return COMPLAINTS_CSV.read_text(encoding="utf-8")
 
 
 def _flatten_fixture() -> list[dict]:
-    """Return fixture as flat list of complaint dicts (with complaint_id)."""
-    data = _load_fixture()
-    hits = data["hits"]["hits"]
-    return _hits_to_complaints(hits)
+    """Return fixture CSV as a flat list of internal complaint dicts."""
+    text = _fixture_csv_text()
+    reader = csv.DictReader(io.StringIO(text))
+    from cam.ingestion.cfpb import _csv_row_to_complaint
+
+    complaints = []
+    for row in reader:
+        c = _csv_row_to_complaint(row)
+        if c:
+            complaints.append(c)
+    return complaints
 
 
 def _seed_complaint_event(
@@ -243,41 +285,79 @@ class TestRetryLogic:
 
 
 # ---------------------------------------------------------------------------
-# TestHitsToComplaints
+# TestCsvRowToComplaint
 # ---------------------------------------------------------------------------
 
 
-class TestHitsToComplaints:
-    def test_drops_hits_with_blank_id(self):
-        """Hits without _id must be silently dropped to prevent duplicate ingestion."""
-        hits = [
-            {"_id": "", "_source": {"company": "No ID Bank"}},
-            {"_source": {"company": "Also No ID"}},  # missing _id entirely
-            {"_id": "VALID-1", "_source": {"company": "Good Bank"}},
-        ]
-        result = _hits_to_complaints(hits)
-        assert len(result) == 1
-        assert result[0]["complaint_id"] == "VALID-1"
+class TestCsvRowToComplaint:
+    def test_maps_columns_to_internal_names(self):
+        row = {
+            "Complaint ID": "TEST-1",
+            "Company": "Test Bank",
+            "Date received": "2022-06-01",
+            "Product": "Mortgage",
+            "Issue": "Billing error",
+        }
+        result = _csv_row_to_complaint(row)
+        assert result is not None
+        assert result["complaint_id"] == "TEST-1"
+        assert result["company"] == "Test Bank"
+        assert result["date_received"] == "2022-06-01"
+        assert result["product"] == "Mortgage"
+        assert result["issue"] == "Billing error"
 
-    # (existing tests continue below)
-    def test_extracts_complaint_id(self):
-        hits = [{"_id": "ABC-123", "_source": {"company": "Test Bank"}}]
-        result = _hits_to_complaints(hits)
-        assert result[0]["complaint_id"] == "ABC-123"
+    def test_returns_none_for_missing_complaint_id(self):
+        row = {"Complaint ID": "", "Company": "Ghost Bank"}
+        assert _csv_row_to_complaint(row) is None
 
-    def test_flattens_source_fields(self):
-        hits = [{"_id": "1", "_source": {"product": "Mortgage", "state": "CA"}}]
-        result = _hits_to_complaints(hits)
-        assert result[0]["product"] == "Mortgage"
-        assert result[0]["state"] == "CA"
+    def test_returns_none_for_absent_complaint_id_key(self):
+        row = {"Company": "Ghost Bank"}
+        assert _csv_row_to_complaint(row) is None
 
-    def test_empty_list(self):
-        assert _hits_to_complaints([]) == []
+    def test_complaint_id_always_present_in_output(self):
+        row = {"Complaint ID": "ABC-42", "Company": "Good Bank"}
+        result = _csv_row_to_complaint(row)
+        assert "complaint_id" in result
+        assert result["complaint_id"] == "ABC-42"
 
-    def test_ignores_non_dict_hits(self):
-        hits = ["not-a-dict", {"_id": "2", "_source": {}}]
-        result = _hits_to_complaints(hits)
-        assert len(result) == 1
+
+# ---------------------------------------------------------------------------
+# TestParseBulkZip
+# ---------------------------------------------------------------------------
+
+
+class TestParseBulkZip:
+    def test_parses_fixture_csv(self):
+        csv_text = _fixture_csv_text()
+        zip_bytes = _make_zip_response(csv_text).content
+        complaints = _parse_bulk_zip(zip_bytes, date(2022, 1, 1))
+        # 10 complaints from 2022; 1 from 2021 filtered out
+        assert len(complaints) == 10
+
+    def test_since_date_filter_applied(self):
+        csv_text = _fixture_csv_text()
+        zip_bytes = _make_zip_response(csv_text).content
+        all_complaints = _parse_bulk_zip(zip_bytes, date(2021, 1, 1))
+        assert len(all_complaints) == 11  # includes the 2021 record
+
+    def test_bad_zip_returns_empty(self):
+        result = _parse_bulk_zip(b"not-a-zip", date(2022, 1, 1))
+        assert result == []
+
+    def test_zip_with_no_csv_returns_empty(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, mode="w") as zf:
+            zf.writestr("README.txt", "no CSV here")
+        result = _parse_bulk_zip(buf.getvalue(), date(2022, 1, 1))
+        assert result == []
+
+    def test_complaint_ids_present(self):
+        csv_text = _fixture_csv_text()
+        zip_bytes = _make_zip_response(csv_text).content
+        complaints = _parse_bulk_zip(zip_bytes, date(2022, 1, 1))
+        ids = {c["complaint_id"] for c in complaints}
+        assert "CFPB-2022-001" in ids
+        assert "CFPB-2021-OLD" not in ids
 
 
 # ---------------------------------------------------------------------------
@@ -314,37 +394,108 @@ class TestGetExistingComplaintIds:
 
 
 # ---------------------------------------------------------------------------
-# TestFetchComplaintsPage
+# TestFetchBulkComplaints
 # ---------------------------------------------------------------------------
 
 
-class TestFetchComplaintsPage:
-    def test_returns_hits_and_total(self):
-        fixture = _load_fixture()
+class TestFetchBulkComplaints:
+    """Tests for _fetch_bulk_complaints using the new streaming download path."""
+
+    def test_downloads_and_parses(self):
+        zip_bytes = COMPLAINTS_ZIP.read_bytes()
+        client = _make_streaming_client(zip_bytes)
+
+        complaints = _fetch_bulk_complaints(date(2022, 1, 1), client=client)
+        assert len(complaints) == 10  # 2021 record filtered
+
+    def test_filters_by_since_date(self):
+        zip_bytes = COMPLAINTS_ZIP.read_bytes()
+        client = _make_streaming_client(zip_bytes)
+
+        complaints = _fetch_bulk_complaints(date(2021, 1, 1), client=client)
+        assert len(complaints) == 11
+
+
+# ---------------------------------------------------------------------------
+# TestStreamToTempfile
+# ---------------------------------------------------------------------------
+
+
+class TestStreamToTempfile:
+    """Tests for the _stream_to_tempfile streaming helper."""
+
+    def test_writes_zip_to_tempfile(self):
+        """Streamed bytes must produce a valid, parseable ZIP on disk."""
+        zip_bytes = COMPLAINTS_ZIP.read_bytes()
+        client = _make_streaming_client(zip_bytes)
+
+        with patch("cam.ingestion.cfpb.get_settings") as mock_settings:
+            mock_settings.return_value.cfpb_bulk_url = "http://fake/complaints.csv.zip"
+            tmp_path = _stream_to_tempfile("http://fake/complaints.csv.zip", client=client)
+        try:
+            assert tmp_path.exists()
+            assert tmp_path.stat().st_size > 0
+            # Must be a valid ZIP
+            assert zipfile.is_zipfile(tmp_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_tempfile_cleaned_up_by_fetch(self):
+        """_fetch_bulk_complaints must delete the temp file after parsing."""
+        zip_bytes = COMPLAINTS_ZIP.read_bytes()
+        client = _make_streaming_client(zip_bytes)
+        created_paths: list[Path] = []
+
+        original_stream = _stream_to_tempfile
+
+        def _spy_stream(url, **kwargs):
+            path = original_stream(url, **kwargs)
+            created_paths.append(path)
+            return path
+
+        with (
+            patch("cam.ingestion.cfpb.get_settings") as mock_settings,
+            patch("cam.ingestion.cfpb._stream_to_tempfile", side_effect=_spy_stream),
+        ):
+            mock_settings.return_value.cfpb_bulk_url = "http://fake/complaints.csv.zip"
+            _fetch_bulk_complaints(date(2022, 1, 1), client=client)
+
+        assert created_paths, "_stream_to_tempfile was never called"
+        for p in created_paths:
+            assert not p.exists(), f"Temp file {p} was not cleaned up"
+
+    def test_streaming_end_to_end_against_fixture(self):
+        """Full streaming path from fixture zip through _fetch_bulk_complaints.
+
+        This is the end-to-end streaming test: the fixture ZIP is served via the
+        streaming client mock, downloaded chunk-by-chunk to a tempfile, parsed
+        from the tempfile, and filtered by date — all without the zip ever being
+        held fully in memory as a single ``resp.content`` blob.
+        """
+        zip_bytes = COMPLAINTS_ZIP.read_bytes()
+        # Split into 512-byte chunks to exercise multi-chunk streaming
+        chunk_size = 512
+        chunks = [zip_bytes[i : i + chunk_size] for i in range(0, len(zip_bytes), chunk_size)]
+
+        stream_resp = MagicMock()
+        stream_resp.raise_for_status.return_value = None
+        stream_resp.iter_bytes.return_value = iter(chunks)
+
+        @contextmanager
+        def _stream_ctx(*args, **kwargs):
+            yield stream_resp
+
         client = MagicMock(spec=httpx.Client)
-        client.get.return_value = _make_response(fixture)
+        client.stream.side_effect = _stream_ctx
 
-        hits, total = _fetch_complaints_page(date(2022, 1, 1), client=client)
-        assert total == 11
-        assert len(hits) == 11
+        with patch("cam.ingestion.cfpb.get_settings") as mock_settings:
+            mock_settings.return_value.cfpb_bulk_url = "http://fake/complaints.csv.zip"
+            complaints = _fetch_bulk_complaints(date(2022, 1, 1), client=client)
 
-    def test_unexpected_response_returns_empty(self):
-        client = MagicMock(spec=httpx.Client)
-        client.get.return_value = _make_response("not-a-dict")
-
-        hits, total = _fetch_complaints_page(date(2022, 1, 1), client=client)
-        assert hits == []
-        assert total == 0
-
-    def test_sends_since_date_param(self):
-        fixture = _load_fixture()
-        client = MagicMock(spec=httpx.Client)
-        client.get.return_value = _make_response(fixture)
-
-        _fetch_complaints_page(date(2022, 6, 1), client=client)
-        call_kwargs = client.get.call_args[1]
-        params = call_kwargs.get("params", {})
-        assert params.get("date_received_min") == "2022-06-01"
+        assert len(complaints) == 10  # 10 from 2022, 1 filtered (CFPB-2021-OLD)
+        ids = {c["complaint_id"] for c in complaints}
+        assert "CFPB-2022-001" in ids
+        assert "CFPB-2021-OLD" not in ids
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +596,6 @@ class TestIngestComplaints:
 
         events = db.execute(select(Event).where(Event.source == "cfpb_complaint")).scalars().all()
         for e in events:
-            # At minimum product and issue should be in raw_json
             assert "product" in e.raw_json or "issue" in e.raw_json
 
     def test_no_penalty_for_complaints(self, db):
@@ -470,14 +620,9 @@ class TestIngestComplaints:
         assert result.ingested == 0
         assert result.total == 0
 
-    def test_fetches_from_api_when_not_provided(self, db):
-        fixture = _load_fixture()
-        client = MagicMock(spec=httpx.Client)
-        # First page returns all 11; second call returns empty to stop pagination
-        client.get.side_effect = [
-            _make_response(fixture),
-            _make_response({"hits": {"total": {"value": 11}, "hits": []}}),
-        ]
+    def test_fetches_from_bulk_when_not_provided(self, db):
+        zip_bytes = COMPLAINTS_ZIP.read_bytes()
+        client = _make_streaming_client(zip_bytes)
         result = ingest_complaints(date(2022, 1, 1), db=db, client=client)
         assert result.ingested == 10  # 10 from 2022, 1 filtered by since_date
 
@@ -501,10 +646,11 @@ class TestIngestComplaints:
 
 
 def test_entity_resolution_strips_legal_suffix(db):
-    entity = _make_entity(db, "WELLS FARGO BANK")
+    # _clean_company_name("WELLS FARGO BANK") → "WELLS FARGO" (strips BANK suffix)
+    entity = _make_entity(db, "WELLS FARGO")
     from cam.entity.resolver import add_alias
 
-    add_alias(entity.id, "WELLS FARGO BANK", "cfpb_complaint", 1.0, db)
+    add_alias(entity.id, "WELLS FARGO", "cfpb_complaint", 1.0, db)
 
     complaints = _flatten_fixture()
     ingest_complaints(date(2022, 1, 1), db=db, complaints=complaints)
