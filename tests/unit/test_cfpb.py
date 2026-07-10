@@ -27,7 +27,6 @@ from cam.ingestion.cfpb import (
     _get_existing_complaint_ids,
     _is_retriable_error,
     _parse_bulk_zip,
-    _parse_bulk_zip_from_path,
     _parse_date,
     _parse_decimal,
     _stream_to_tempfile,
@@ -432,9 +431,7 @@ class TestStreamToTempfile:
 
         with patch("cam.ingestion.cfpb.get_settings") as mock_settings:
             mock_settings.return_value.cfpb_bulk_url = "http://fake/complaints.csv.zip"
-            tmp_path = _stream_to_tempfile(
-                "http://fake/complaints.csv.zip", client=client
-            )
+            tmp_path = _stream_to_tempfile("http://fake/complaints.csv.zip", client=client)
         try:
             assert tmp_path.exists()
             assert tmp_path.stat().st_size > 0
@@ -456,8 +453,9 @@ class TestStreamToTempfile:
             created_paths.append(path)
             return path
 
-        with patch("cam.ingestion.cfpb.get_settings") as mock_settings, patch(
-            "cam.ingestion.cfpb._stream_to_tempfile", side_effect=_spy_stream
+        with (
+            patch("cam.ingestion.cfpb.get_settings") as mock_settings,
+            patch("cam.ingestion.cfpb._stream_to_tempfile", side_effect=_spy_stream),
         ):
             mock_settings.return_value.cfpb_bulk_url = "http://fake/complaints.csv.zip"
             _fetch_bulk_complaints(date(2022, 1, 1), client=client)
@@ -477,10 +475,7 @@ class TestStreamToTempfile:
         zip_bytes = COMPLAINTS_ZIP.read_bytes()
         # Split into 512-byte chunks to exercise multi-chunk streaming
         chunk_size = 512
-        chunks = [
-            zip_bytes[i : i + chunk_size]
-            for i in range(0, len(zip_bytes), chunk_size)
-        ]
+        chunks = [zip_bytes[i : i + chunk_size] for i in range(0, len(zip_bytes), chunk_size)]
 
         stream_resp = MagicMock()
         stream_resp.raise_for_status.return_value = None

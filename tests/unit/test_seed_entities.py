@@ -9,7 +9,6 @@ Uses SQLite in-memory DB (no live Postgres required).
 from __future__ import annotations
 
 import json
-import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -20,9 +19,7 @@ from sqlalchemy.orm import sessionmaker
 
 from cam.db.models import Base, Entity, EntityAlias
 from cam.entity.seed import (
-    DEFAULT_BATCH_SIZE,
     SEC_TICKERS_URL,
-    _upsert_batch,
     fetch_tickers,
     seed,
 )
@@ -169,7 +166,7 @@ class TestSeed:
         inserted2, skipped2 = seed(db, SAMPLE_TICKERS)
 
         assert inserted1 == 3
-        assert inserted2 == 0          # all already exist
+        assert inserted2 == 0  # all already exist
         assert skipped2 == 3
 
         entity_count = db.execute(text("SELECT COUNT(*) FROM entities")).scalar()
@@ -259,9 +256,7 @@ class TestFetchAndSeedRoundTrip:
         # Verify each company is in the DB
         for entry in SAMPLE_TICKERS.values():
             entity = (
-                db.execute(select(Entity).where(Entity.ticker == entry["ticker"]))
-                .scalars()
-                .first()
+                db.execute(select(Entity).where(Entity.ticker == entry["ticker"])).scalars().first()
             )
             assert entity is not None, f"Expected ticker {entry['ticker']} in DB"
             assert entity.canonical_name == entry["title"]

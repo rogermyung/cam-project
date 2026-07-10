@@ -59,8 +59,7 @@ def _upsert_batch(db: Session, entities: list[Entity], aliases: list[EntityAlias
     from sqlalchemy import text as sa_text
 
     entity_rows = [
-        {"id": str(e.id), "canonical_name": e.canonical_name, "ticker": e.ticker}
-        for e in entities
+        {"id": str(e.id), "canonical_name": e.canonical_name, "ticker": e.ticker} for e in entities
     ]
     alias_rows = [
         {
