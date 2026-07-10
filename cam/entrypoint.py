@@ -80,10 +80,12 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     logger.info("Ingest starting — sources=%s since=%s", sources, since)
 
     failures: list[str] = []
+    total_ingested = 0
 
     for source in sources:
         try:
-            _ingest_source(source, since, args)
+            count = _ingest_source(source, since, args)
+            total_ingested += count
         except Exception as exc:
             logger.error("Source '%s' failed: %s", source, exc, exc_info=True)
             failures.append(source)
@@ -92,12 +94,20 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         logger.error("Ingestion finished with failures: %s", failures)
         return 1
 
-    logger.info("Ingestion complete — all sources succeeded.")
+    if total_ingested == 0:
+        logger.error(
+            "Ingestion complete — all %d sources succeeded but ingested 0 records total. "
+            "This likely indicates upstream API contracts have broken.",
+            len(sources),
+        )
+        return 1
+
+    logger.info("Ingestion complete — all sources succeeded (%d records total).", total_ingested)
     return 0
 
 
-def _ingest_source(source: str, since: date, args: argparse.Namespace) -> None:
-    """Dispatch a single source ingestion and log the result."""
+def _ingest_source(source: str, since: date, args: argparse.Namespace) -> int:
+    """Dispatch a single source ingestion and return the number of records ingested."""
     from cam.db.session import get_session
 
     if source == "osha":
@@ -124,6 +134,7 @@ def _ingest_source(source: str, since: date, args: argparse.Namespace) -> None:
                 result = ingest_from_csv(csv_path, since_date=since, db=db)
             total_ingested += result.ingested
         logger.info("osha: %s records ingested", total_ingested)
+        return total_ingested
 
     elif source == "epa":
         from cam.ingestion.epa import ingest_echo_violations
@@ -131,6 +142,7 @@ def _ingest_source(source: str, since: date, args: argparse.Namespace) -> None:
         with get_session() as db:
             count = ingest_echo_violations(since_date=since, db=db)
         logger.info("epa: %s records ingested", count)
+        return count
 
     elif source == "cfpb":
         from cam.ingestion.cfpb import ingest_complaints
@@ -138,6 +150,7 @@ def _ingest_source(source: str, since: date, args: argparse.Namespace) -> None:
         with get_session() as db:
             count = ingest_complaints(since_date=since, db=db)
         logger.info("cfpb: %s records ingested", count)
+        return count
 
     elif source == "warn":
         from cam.ingestion.warn import ingest_all_states
@@ -145,6 +158,7 @@ def _ingest_source(source: str, since: date, args: argparse.Namespace) -> None:
         with get_session() as db:
             summary = ingest_all_states(since_date=since, db=db)
         logger.info("warn: %s", summary)
+        return sum(r.ingested for r in summary)
 
     elif source == "edgar":
         from cam.ingestion.edgar import ingest_all_10k
@@ -152,6 +166,7 @@ def _ingest_source(source: str, since: date, args: argparse.Namespace) -> None:
         with get_session() as db:
             count = ingest_all_10k(since_date=since, entity_ids=None, db=db)
         logger.info("edgar: %s filings ingested", count)
+        return count
 
     else:
         raise ValueError(f"Unknown source: {source!r}")
