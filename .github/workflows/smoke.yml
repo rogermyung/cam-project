@@ -1,0 +1,29 @@
+# Weekly smoke test to detect upstream API/endpoint drift early.
+# Runs live tests against real endpoints. Per-source failures are expected signal,
+# not flakes — they indicate upstream changes we need to adapt to.
+name: CAM Weekly Smoke Test
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run live smoke tests
+        env:
+          DATABASE_URL: postgresql://smoke:smoke@localhost:5432/smoke
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT || 'smoke@cam-project.org' }}
+        run: python -m pytest tests/smoke -m live -v
