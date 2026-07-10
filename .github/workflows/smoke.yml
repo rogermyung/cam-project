@@ -19,11 +19,17 @@ jobs:
         with:
           python-version: "3.11"
 
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "requirements*.txt"
+
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        run: uv pip install --system -r requirements-dev.txt
 
       - name: Run live smoke tests
         env:
-          DATABASE_URL: postgresql://smoke:smoke@localhost:5432/smoke
+          # No DB is touched — this dummy value only satisfies Settings validation.
+          DATABASE_URL: "sqlite:///:memory:"
           EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT || 'smoke@cam-project.org' }}
         run: python -m pytest tests/smoke -m live -v

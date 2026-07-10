@@ -6,14 +6,32 @@ return successful responses. Per-state test nodes surface which state feeds
 have drifted independently.
 """
 
-import httpx
 import pytest
 
 from cam.ingestion.warn.state_urls import STATE_CONFIGS
+from tests.smoke._http import get_live
+
+# States with a known, already-documented outage (see the comments on their
+# StateConfig in cam/ingestion/warn/state_urls.py) are xfail so the weekly
+# smoke run stays a useful signal for NEW drift rather than being
+# permanently red on issues already tracked. Do not add a state here just
+# because it failed once — that suppresses the exact drift this suite exists
+# to catch. Only add it once there's a known, documented root cause.
+_KNOWN_BROKEN = {
+    "CA": "CA switched CSV->XLSX in early 2026; old warn_report.csv URL 404s until XLSX ingestion ships",
+    "MI": "MI blocks non-browser clients with a 403 from its Akamai WAF as of March 2026",
+}
+
+_PARAMS = [
+    pytest.param(code, marks=pytest.mark.xfail(reason=_KNOWN_BROKEN[code], strict=False))
+    if code in _KNOWN_BROKEN
+    else code
+    for code in sorted(STATE_CONFIGS)
+]
 
 
 @pytest.mark.live
-@pytest.mark.parametrize("code", sorted(STATE_CONFIGS))
+@pytest.mark.parametrize("code", _PARAMS)
 def test_warn_state_url_accessible(code: str) -> None:
     """
     Verify that each WARN state source URL is accessible.
@@ -22,7 +40,7 @@ def test_warn_state_url_accessible(code: str) -> None:
     state feeds are immediately visible and don't mask other states.
     """
     cfg = STATE_CONFIGS[code]
-    resp = httpx.get(
+    resp = get_live(
         cfg.url,
         headers={"User-Agent": "Mozilla/5.0 (compatible; CAM-smoke/1.0)"},
         follow_redirects=True,
