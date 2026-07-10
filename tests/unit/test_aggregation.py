@@ -415,6 +415,30 @@ def test_write_cross_agency_signals_persists_rows(db):
     assert 0.0 <= rows[0].score <= 1.0
 
 
+def test_write_cross_agency_signals_reruns_upsert_not_duplicate(db):
+    """Re-running for the same date must update the row, not accumulate duplicates."""
+    entity = _entity(db, "Acme Corp", naics_code="3311")
+    _event(db, entity.id, "osha", "violation", TODAY, penalty_usd=5000)
+
+    n1 = write_cross_agency_signals(db=db, score_date=TODAY)
+    assert n1 == 1
+
+    rows_after_first = db.query(Signal).filter_by(signal_type="cross_agency_composite").all()
+    assert len(rows_after_first) == 1
+    original_id = rows_after_first[0].id
+
+    # Add more events so the recomputed score changes, then re-run for the same date.
+    _event(db, entity.id, "epa", "violation", TODAY, penalty_usd=9000)
+    n2 = write_cross_agency_signals(db=db, score_date=TODAY)
+    assert n2 == 1
+
+    rows_after_second = db.query(Signal).filter_by(signal_type="cross_agency_composite").all()
+    # Still exactly one row for this entity/date — updated in place, not duplicated.
+    assert len(rows_after_second) == 1
+    assert rows_after_second[0].id == original_id
+    assert rows_after_second[0].entity_id == entity.id
+
+
 def test_write_cross_agency_signals_uses_settings_lookback_days(db):
     """lookback_days=None should read from Settings (default 365)."""
     entity = _entity(db, "Beta Ltd")

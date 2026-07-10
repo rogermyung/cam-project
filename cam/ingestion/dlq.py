@@ -65,6 +65,27 @@ class ReplayResult:
 # ---------------------------------------------------------------------------
 
 
+def _format_traceback(exc: BaseException) -> str:
+    """Return a meaningful traceback string for *exc*.
+
+    ``traceback.format_exc()`` only captures a traceback inside an active
+    ``except`` block.  Several callers construct an Exception and pass it here
+    without ever raising it (e.g. entity-resolution failures), which would make
+    ``format_exc()`` return an unhelpful ``'NoneType: None'``.  Prefer the
+    exception's own ``__traceback__``; if it has none, fall back to the active
+    exception context, then to the current call stack so the DLQ row still shows
+    where the failure was recorded.
+    """
+    if exc.__traceback__ is not None:
+        return "".join(tb.format_exception(type(exc), exc, exc.__traceback__))
+
+    active = tb.format_exc()
+    if active and active.strip() != "NoneType: None":
+        return active
+
+    return f"{type(exc).__name__}: {exc}\n" + "".join(tb.format_stack())
+
+
 def record_failure(
     db: Session,
     source: str,
@@ -119,7 +140,7 @@ def record_failure(
             raw_json=raw_record,
             error_type=error_type,
             error_msg=str(exc),
-            traceback=tb.format_exc(),
+            traceback=_format_traceback(exc),
         )
         # Use a SAVEPOINT so that a failed DLQ write (e.g. table missing, DB
         # hiccup) only rolls back the SAVEPOINT — not the outer transaction.

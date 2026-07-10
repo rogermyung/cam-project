@@ -351,6 +351,67 @@ class TestIngestFromCsv:
         assert r2.ingested == 0
         assert r2.skipped == 100
 
+    def test_resume_after_partial_run_processes_every_remaining_row(self, db, tmp_path):
+        """Regression: resume must not skip rows after a partial (crashed) run.
+
+        A crashed run leaves some rows ingested (now in the idempotency set) plus
+        an incomplete checkpoint offset.  The offset must index the *stable*
+        since-filtered row list, not the post-idempotency work list.  Under the
+        old logic the offset indexed the shrunken work list, so on resume the
+        already-ingested rows were removed AND the offset skipped an equal number
+        of genuinely unprocessed rows — silent data loss.
+        """
+        import uuid
+
+        from cam.ingestion.checkpoint import save_checkpoint
+
+        header = (
+            "activity_nr,estab_name,site_city,site_state,naics_code,"
+            "open_date,violation_type,initial_penalty,citation_text\n"
+        )
+        rows = [
+            f"100{n},ACME CO {n},CHICAGO,IL,332710,2023-06-0{n},S,5000,text {n}\n"
+            for n in range(1, 6)
+        ]
+        csv_file = tmp_path / "resume.csv"
+        csv_file.write_text(header + "".join(rows))
+
+        # Simulate a crashed run that processed the first two stable rows
+        # (activity_nr 1001, 1002) and checkpointed at offset 2.
+        run_id = uuid.uuid4()
+        for nr in ("1001", "1002"):
+            db.add(
+                Event(
+                    source="osha",
+                    event_type="violation",
+                    event_date=date(2023, 6, 1),
+                    raw_json={"activity_nr": nr},
+                )
+            )
+        db.commit()
+        save_checkpoint(
+            db,
+            source="osha",
+            run_id=run_id,
+            cursor={"offset": 2, "records_ok": 2, "records_err": 0},
+            records_ok=2,
+            records_err=0,
+        )
+        db.commit()
+
+        # Resume the same run.
+        result = ingest_from_csv(csv_file, db=db, run_id=run_id, resume=True)
+
+        # All five activity_nrs must be present exactly once — no row dropped.
+        persisted = {
+            e.raw_json["activity_nr"]
+            for e in db.execute(select(Event).where(Event.source == "osha")).scalars().all()
+        }
+        assert persisted == {"1001", "1002", "1003", "1004", "1005"}
+        # The three previously-unprocessed rows were ingested on resume; the two
+        # already-persisted rows carry over via the checkpoint's records_ok seed.
+        assert result.ingested == 5
+
     def test_since_date_filters_old_records(self, db):
         # All fixture records have open_date between 2021 and 2023
         result = ingest_from_csv(SAMPLE_CSV, since_date=date(2023, 1, 1), db=db)

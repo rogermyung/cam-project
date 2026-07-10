@@ -88,6 +88,10 @@ class Settings(BaseSettings):
         default="https://www.sec.gov/files/company_tickers.json",
         description="URL for the SEC company tickers JSON (maps CIK → ticker/name)",
     )
+    edgar_http_timeout: int = Field(
+        default=30,
+        description="HTTP timeout in seconds for SEC EDGAR requests (e.g. the company-tickers seed fetch)",
+    )
     edgar_max_index_quarters: int = Field(
         default=4,
         description=(

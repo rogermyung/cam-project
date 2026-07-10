@@ -17,9 +17,9 @@ import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 
+from cam.config import get_settings
 from cam.db.models import Base, Entity, EntityAlias
 from cam.entity.seed import (
-    SEC_TICKERS_URL,
     fetch_tickers,
     seed,
 )
@@ -89,30 +89,61 @@ SAMPLE_TICKERS = {
 
 class TestFetchTickers:
     def test_returns_parsed_json(self):
-        """fetch_tickers returns the parsed JSON dict from SEC."""
+        """fetch_tickers returns the parsed JSON dict from SEC.
+
+        The URL and timeout come from Settings (edgar_company_tickers_url /
+        edgar_http_timeout), not hardcoded module constants.
+        """
+        settings = get_settings()
         mock_resp = _make_httpx_response(SAMPLE_TICKERS)
         with patch("httpx.get", return_value=mock_resp) as mock_get:
             result = fetch_tickers("test@example.com")
 
         mock_get.assert_called_once_with(
-            SEC_TICKERS_URL,
+            settings.edgar_company_tickers_url,
             headers={"User-Agent": "test@example.com"},
-            timeout=30,
+            timeout=settings.edgar_http_timeout,
             follow_redirects=True,
         )
         assert result == SAMPLE_TICKERS
 
     def test_raises_on_http_error(self):
-        """fetch_tickers propagates HTTP errors from raise_for_status."""
-        mock_resp = _make_httpx_response({}, status_code=500)
+        """fetch_tickers propagates non-retriable HTTP errors (e.g. 404)."""
+        mock_resp = _make_httpx_response({}, status_code=404)
         mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "500 Server Error",
+            "404 Not Found",
             request=MagicMock(),
             response=mock_resp,
         )
         with patch("httpx.get", return_value=mock_resp):
             with pytest.raises(httpx.HTTPStatusError):
                 fetch_tickers("test@example.com")
+
+    def test_retries_transient_then_succeeds(self):
+        """A transient failure is retried and the subsequent success is returned."""
+        good_resp = _make_httpx_response(SAMPLE_TICKERS)
+        # First call raises a retriable timeout; second call succeeds.
+        with (
+            patch(
+                "httpx.get",
+                side_effect=[httpx.TimeoutException("temporary"), good_resp],
+            ) as mock_get,
+            patch("cam.entity.seed._make_retry_decorator") as mock_decorator,
+        ):
+            # Zero-wait retry so the test stays fast while still exercising the loop.
+            from tenacity import retry, retry_if_exception, stop_after_attempt
+
+            from cam.entity.seed import _is_retriable_error
+
+            mock_decorator.return_value = retry(
+                retry=retry_if_exception(_is_retriable_error),
+                stop=stop_after_attempt(5),
+                reraise=True,
+            )
+            result = fetch_tickers("test@example.com")
+
+        assert result == SAMPLE_TICKERS
+        assert mock_get.call_count == 2
 
     def test_uses_fixture_schema(self):
         """The company_tickers.json fixture matches the real SEC schema."""

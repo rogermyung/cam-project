@@ -25,25 +25,84 @@ import uuid
 
 import httpx
 from sqlalchemy.orm import Session
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
+from cam.config import get_settings
 from cam.db.models import Entity, EntityAlias
 
 logger = logging.getLogger(__name__)
 
-SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 DEFAULT_BATCH_SIZE = 500
 
 
-def fetch_tickers(user_agent: str) -> dict:
-    """Fetch company_tickers.json from SEC EDGAR (one HTTP call, ~10 000 companies)."""
-    logger.info("Fetching %s", SEC_TICKERS_URL)
-    resp = httpx.get(
-        SEC_TICKERS_URL,
-        headers={"User-Agent": user_agent},
-        timeout=30,
-        follow_redirects=True,
+def _is_retriable_error(exc: BaseException) -> bool:
+    """Return True for transient network errors and HTTP 429/5xx responses.
+
+    Mirrors the retry policy used by the ingestion modules (see
+    ``cam.ingestion.edgar`` / ``cam.ingestion.cfpb``) so seeding is just as
+    resilient to transient SEC endpoint failures.
+    """
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (
+        429,  # rate-limited
+        500,  # internal server error (transient)
+        502,  # bad gateway
+        503,  # service unavailable
+        504,  # gateway timeout
+    ):
+        return True
+    return False
+
+
+def _make_retry_decorator():
+    """Return a tenacity retry decorator for transient SEC seed-fetch errors."""
+    return retry(
+        retry=retry_if_exception(_is_retriable_error),
+        wait=wait_exponential(multiplier=1, min=1, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
     )
-    resp.raise_for_status()
+
+
+def fetch_tickers(user_agent: str, *, client: httpx.Client | None = None) -> dict:
+    """Fetch company_tickers.json from SEC EDGAR (one HTTP call, ~10 000 companies).
+
+    The URL and HTTP timeout are loaded from :class:`cam.config.Settings`
+    (``edgar_company_tickers_url`` / ``edgar_http_timeout``) so they are
+    configurable per environment.  Transient failures (network errors,
+    HTTP 429/5xx) are retried with exponential back-off.
+    """
+    settings = get_settings()
+    url = settings.edgar_company_tickers_url
+    timeout = settings.edgar_http_timeout
+    logger.info("Fetching %s", url)
+
+    @_make_retry_decorator()
+    def _request() -> httpx.Response:
+        if client is not None:
+            resp = client.get(
+                url,
+                headers={"User-Agent": user_agent},
+                timeout=timeout,
+                follow_redirects=True,
+            )
+        else:
+            resp = httpx.get(
+                url,
+                headers={"User-Agent": user_agent},
+                timeout=timeout,
+                follow_redirects=True,
+            )
+        resp.raise_for_status()
+        return resp
+
+    resp = _request()
     data = resp.json()
     logger.info("Fetched %d companies from SEC", len(data))
     return data

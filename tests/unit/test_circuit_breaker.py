@@ -10,6 +10,7 @@ Tests cover all three state transitions:
 
 from __future__ import annotations
 
+import threading
 import time
 from unittest.mock import MagicMock
 
@@ -218,4 +219,77 @@ def test_manual_reset_clears_open_state():
 
     assert breaker.state == BreakerState.OPEN
     breaker.reset()
+    assert breaker.state == BreakerState.CLOSED
+
+
+# ---------------------------------------------------------------------------
+# Concurrency: HALF_OPEN allows only a single probe
+# ---------------------------------------------------------------------------
+
+
+def test_half_open_allows_only_one_concurrent_probe():
+    """Under concurrency, exactly one caller runs the HALF_OPEN probe.
+
+    WARN ingestion fetches states in parallel threads that share a breaker, so
+    multiple callers can reach a HALF_OPEN breaker at once.  Only one should
+    probe the recovering API; the rest must fail fast with CircuitOpenError.
+    """
+    # recovery_timeout=0 → the breaker moves OPEN→HALF_OPEN on the very next
+    # call, so no time monkeypatching is needed.
+    breaker = CircuitBreaker("test_concurrent_probe", failure_threshold=1, recovery_timeout=0)
+
+    # Open the breaker.  (With recovery_timeout=0 the breaker is eligible to
+    # move to HALF_OPEN on the next call, so we don't assert the OPEN state here
+    # — merely reading it would consume the transition.)
+    with pytest.raises(RuntimeError):
+        breaker.call(lambda: (_ for _ in ()).throw(RuntimeError("down")))
+
+    n_threads = 8
+    probe_calls = 0
+    probe_calls_lock = threading.Lock()
+    probe_entered = threading.Event()
+    release_probe = threading.Event()
+
+    def slow_probe():
+        nonlocal probe_calls
+        with probe_calls_lock:
+            probe_calls += 1
+        probe_entered.set()
+        # Hold the probe open long enough for the other threads to attempt and
+        # be rejected while this one is still in flight.
+        release_probe.wait(timeout=5)
+        return "recovered"
+
+    results: list[str] = []
+    results_lock = threading.Lock()
+    start = threading.Barrier(n_threads)
+
+    def worker():
+        start.wait()
+        try:
+            breaker.call(slow_probe)
+            with results_lock:
+                results.append("ok")
+        except CircuitOpenError:
+            with results_lock:
+                results.append("open")
+
+    threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+
+    # Wait until the single probe is in flight, then let the rejected threads
+    # settle before releasing it.
+    assert probe_entered.wait(timeout=5), "no probe ever started"
+    # The non-probing threads reject immediately (no blocking), so give them a
+    # brief window to record their results, then release the probe.
+    time.sleep(0.1)
+    release_probe.set()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert probe_calls == 1, f"expected exactly one probe, got {probe_calls}"
+    assert results.count("open") == n_threads - 1
+    assert results.count("ok") == 1
+    # A successful probe closes the breaker.
     assert breaker.state == BreakerState.CLOSED

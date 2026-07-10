@@ -367,16 +367,37 @@ def write_cross_agency_signals(
                     f"cfpb_spike={summary.cfpb_spike_detected}, "
                     f"active_agencies={summary.agency_overlap_count}"
                 )
-                sig = Signal(
-                    id=_uuid.uuid4(),
-                    entity_id=eid,
-                    source="aggregation_m6",
-                    signal_type="cross_agency_composite",
-                    signal_date=score_date,
-                    score=summary.composite_risk_score,
-                    evidence=evidence,
+                # Upsert on (entity_id, source, signal_type, signal_date) so a
+                # re-run for the same date updates the existing row instead of
+                # inserting a duplicate — otherwise the signals table would grow
+                # unbounded across repeated analyze runs and slow scoring scans.
+                existing = (
+                    db.execute(
+                        select(Signal).where(
+                            Signal.entity_id == eid,
+                            Signal.source == "aggregation_m6",
+                            Signal.signal_type == "cross_agency_composite",
+                            Signal.signal_date == score_date,
+                        )
+                    )
+                    .scalars()
+                    .first()
                 )
-                db.add(sig)
+                if existing is not None:
+                    existing.score = summary.composite_risk_score
+                    existing.evidence = evidence
+                else:
+                    db.add(
+                        Signal(
+                            id=_uuid.uuid4(),
+                            entity_id=eid,
+                            source="aggregation_m6",
+                            signal_type="cross_agency_composite",
+                            signal_date=score_date,
+                            score=summary.composite_risk_score,
+                            evidence=evidence,
+                        )
+                    )
             written += 1
         except Exception:  # noqa: BLE001
             logger.exception("Failed to write cross_agency_composite signal for entity %s", eid)
