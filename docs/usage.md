@@ -29,6 +29,11 @@ docker-compose up -d
 # Apply database migrations
 DATABASE_URL=postgresql://cam:cam@localhost:5432/cam alembic upgrade head
 
+# Seed the entities table from SEC EDGAR (one-time on a fresh DB; idempotent)
+DATABASE_URL=postgresql://cam:cam@localhost:5432/cam \
+  EDGAR_USER_AGENT=you@example.com \
+  python -m cam.entrypoint seed
+
 # Ingest all regulatory sources (last 30 days by default)
 DATABASE_URL=postgresql://cam:cam@localhost:5432/cam \
   EDGAR_USER_AGENT=you@example.com \

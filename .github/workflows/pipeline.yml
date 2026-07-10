@@ -86,6 +86,12 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
+      - name: Seed entities (SEC EDGAR company_tickers)
+        run: python -m cam.entrypoint seed
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+
       - name: Ingest all sources
         # Each source is attempted independently inside the entrypoint.
         # Exit code 1 if any source failed, but others still run.
