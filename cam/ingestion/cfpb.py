@@ -1,8 +1,8 @@
 """
 M5 — CFPB Ingestion
 
-Ingests CFPB consumer complaint database records and provides complaint-rate
-normalisation and spike-detection analytics.
+Ingests CFPB consumer complaint database records via the bulk CSV download
+and provides complaint-rate normalisation and spike-detection analytics.
 
 Consumer complaint velocity is a leading indicator of consumer harm before
 formal regulatory action.  Raw complaint counts are stored per-event; analytics
@@ -10,17 +10,22 @@ functions normalise against total assets from EDGAR financial data (soft
 dependency on M2).
 
 Data sources:
-  Complaint API: https://www.consumerfinance.gov/data-research/consumer-complaints/search/api/v1/
+  Bulk CSV: https://files.consumerfinance.gov/ccdb/complaints.csv.zip
+  (Updated daily; contains all complaints ever filed.)
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
+import tempfile
 import uuid
+import zipfile
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from pathlib import Path
 from uuid import UUID
 
 import httpx
@@ -42,11 +47,27 @@ from cam.ingestion.dlq import ERROR_DB_WRITE, ERROR_ENTITY_RESOLUTION, record_fa
 
 logger = logging.getLogger(__name__)
 
-_CFPB_API_URL = "https://www.consumerfinance.gov/data-research/consumer-complaints/search/api/v1/"
-# Page size is now configurable via CFPB_PAGE_SIZE env var (Settings.cfpb_page_size).
-# Default 1 000 reduces API round-trips 10× vs the old value of 100, cutting ingest
-# time for a 30-day window from ~2 h to ~12 min.  Reduce on constrained runners;
-# the CFPB API accepts up to 10 000 but large responses can OOM the process.
+# CSV column name → internal field name
+_CSV_COL_MAP: dict[str, str] = {
+    "Date received": "date_received",
+    "Product": "product",
+    "Sub-product": "sub_product",
+    "Issue": "issue",
+    "Sub-issue": "sub_issue",
+    "Consumer complaint narrative": "complaint_what_happened",
+    "Company public response": "company_public_response",
+    "Company": "company",
+    "State": "state",
+    "ZIP code": "zip_code",
+    "Tags": "tags",
+    "Consumer consent provided?": "consumer_consent_provided",
+    "Submitted via": "submitted_via",
+    "Date sent to company": "date_sent_to_company",
+    "Company response to consumer": "company_response",
+    "Timely response?": "timely",
+    "Consumer disputed?": "consumer_disputed",
+    "Complaint ID": "complaint_id",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -95,18 +116,18 @@ def _make_retry_decorator():
 
 def _get(
     url: str,
-    params: dict[str, Any] | None = None,
     *,
     client: httpx.Client | None = None,
+    timeout: int = 300,
 ) -> httpx.Response:
     breaker = get_breaker("cfpb")
 
     @_make_retry_decorator()
     def _request() -> httpx.Response:
         if client is not None:
-            resp = client.get(url, params=params, timeout=60)
+            resp = client.get(url, timeout=timeout)
         else:
-            resp = httpx.get(url, params=params, timeout=60)
+            resp = httpx.get(url, timeout=timeout)
         resp.raise_for_status()
         return resp
 
@@ -121,18 +142,16 @@ def _get(
 def _parse_date(value: str | None) -> date | None:
     """Parse CFPB complaint date strings.
 
-    Handles multiple formats returned by the API over time:
-    - "YYYY-MM-DD"                   (legacy plain date)
+    Handles multiple formats returned by the bulk CSV and legacy API:
+    - "YYYY-MM-DD"                   (plain date, most common in bulk CSV)
     - "MM/DD/YYYY"                   (legacy US format)
-    - "YYYY-MM-DDTHH:MM:SS±HH:MM"   (ISO 8601 with timezone offset, current API)
+    - "YYYY-MM-DDTHH:MM:SS±HH:MM"   (ISO 8601 with timezone offset)
     """
     from datetime import datetime
 
     value = (value or "").strip()
     if not value:
         return None
-    # Try ISO 8601 fromisoformat first — handles both plain dates and
-    # timezone-aware datetimes like "2026-03-14T12:00:00-05:00".
     try:
         return datetime.fromisoformat(value).date()
     except ValueError:
@@ -186,6 +205,170 @@ def _clean_company_name(raw: str | None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Bulk CSV helpers
+# ---------------------------------------------------------------------------
+
+
+def _csv_row_to_complaint(row: dict[str, str]) -> dict | None:
+    """Convert a CSV DictReader row to an internal complaint dict.
+
+    Returns None if the row is missing a Complaint ID (cannot track idempotency).
+    """
+    complaint_id = row.get("Complaint ID", "").strip()
+    if not complaint_id:
+        logger.warning("Dropping CSV row with missing Complaint ID")
+        return None
+    mapped = {_CSV_COL_MAP.get(k, k): v for k, v in row.items()}
+    mapped["complaint_id"] = complaint_id  # ensure key always present
+    return mapped
+
+
+def _parse_bulk_zip(zip_bytes: bytes, since_date: date) -> list[dict]:
+    """Extract and parse complaints from a ZIP archive bytes, filtered to >= since_date.
+
+    The CFPB bulk archive contains a single CSV with all complaints ever filed.
+    We stream through it row-by-row, keeping only those on or after since_date,
+    to avoid loading the full multi-million-row dataset into memory.
+
+    .. note::
+        This variant accepts raw bytes and is retained for use in unit tests and
+        helpers that already hold the zip in memory (e.g. ``_make_zip_response``
+        in tests). For the production download path use
+        ``_parse_bulk_zip_from_path`` which never materialises the full archive.
+    """
+    complaints: list[dict] = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            # Use the first CSV file in the archive regardless of exact filename
+            csv_names = [n for n in zf.namelist() if n.lower().endswith(".csv")]
+            if not csv_names:
+                logger.warning("No CSV found in CFPB bulk zip; contents: %s", zf.namelist())
+                return []
+            with zf.open(csv_names[0]) as raw_file:
+                reader = csv.DictReader(io.TextIOWrapper(raw_file, encoding="utf-8-sig"))
+                for row in reader:
+                    complaint = _csv_row_to_complaint(row)
+                    if complaint is None:
+                        continue
+                    d = _parse_date(complaint.get("date_received"))
+                    if d is not None and d >= since_date:
+                        complaints.append(complaint)
+    except (zipfile.BadZipFile, KeyError, UnicodeDecodeError) as exc:
+        logger.warning("Failed to parse CFPB bulk zip: %s", exc)
+    return complaints
+
+
+def _parse_bulk_zip_from_path(zip_path: Path, since_date: date) -> list[dict]:
+    """Extract and parse complaints from a ZIP file on disk, filtered to >= since_date.
+
+    Identical logic to ``_parse_bulk_zip`` but reads from a file path so the
+    full archive is never loaded into memory — critical for the real 1 GB+ file.
+    """
+    complaints: list[dict] = []
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            csv_names = [n for n in zf.namelist() if n.lower().endswith(".csv")]
+            if not csv_names:
+                logger.warning("No CSV found in CFPB bulk zip; contents: %s", zf.namelist())
+                return []
+            with zf.open(csv_names[0]) as raw_file:
+                reader = csv.DictReader(io.TextIOWrapper(raw_file, encoding="utf-8-sig"))
+                for row in reader:
+                    complaint = _csv_row_to_complaint(row)
+                    if complaint is None:
+                        continue
+                    d = _parse_date(complaint.get("date_received"))
+                    if d is not None and d >= since_date:
+                        complaints.append(complaint)
+    except (zipfile.BadZipFile, KeyError, UnicodeDecodeError, OSError) as exc:
+        logger.warning("Failed to parse CFPB bulk zip at %s: %s", zip_path, exc)
+    return complaints
+
+
+def _stream_to_tempfile(
+    url: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: int = 300,
+    chunk_size: int = 1 << 20,  # 1 MiB
+) -> Path:
+    """Stream a URL response body to a temporary file and return its path.
+
+    Uses ``httpx`` streaming so the response body is never held in memory in
+    its entirety — each chunk is written directly to disk.  The caller is
+    responsible for deleting the returned file when finished.
+
+    The retry / circuit-breaker semantics from :func:`_get` are preserved: a
+    ``@_make_retry_decorator()``-wrapped inner function is passed to the breaker
+    so that transient network errors are retried before surfacing.
+
+    Parameters
+    ----------
+    url:        URL to download.
+    client:     Optional ``httpx.Client`` (allows injection in tests).
+    timeout:    Total timeout in seconds passed to httpx.
+    chunk_size: Bytes per read iteration (default 1 MiB).
+    """
+    breaker = get_breaker("cfpb")
+
+    # Use a NamedTemporaryFile with delete=False so the file persists after
+    # close and can be passed by path to zipfile.ZipFile.
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="cfpb_bulk_",
+        suffix=".zip",
+        delete=False,
+    )
+    tmp_path = Path(tmp.name)
+
+    @_make_retry_decorator()
+    def _do_stream() -> None:
+        # Truncate if we are retrying after a partial write.
+        tmp.seek(0)
+        tmp.truncate()
+
+        ctx = (
+            client.stream("GET", url, timeout=timeout)
+            if client is not None
+            else httpx.stream("GET", url, timeout=timeout)
+        )
+        with ctx as resp:
+            resp.raise_for_status()
+            for chunk in resp.iter_bytes(chunk_size=chunk_size):
+                if chunk:
+                    tmp.write(chunk)
+
+    try:
+        breaker.call(_do_stream)
+    except Exception:
+        # Clean up the temp file on error so callers don't have to.
+        tmp.close()
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    tmp.flush()
+    tmp.close()
+    return tmp_path
+
+
+def _fetch_bulk_complaints(since_date: date, *, client: httpx.Client | None = None) -> list[dict]:
+    """Download the CFPB bulk complaints ZIP and return complaints >= since_date.
+
+    The ZIP is streamed to a temporary file on disk in chunks so the 1 GB+
+    archive is never held fully in memory.  The temp file is deleted before
+    this function returns.
+    """
+    url = get_settings().cfpb_bulk_url
+    logger.info("Downloading CFPB bulk complaints ZIP from %s", url)
+    tmp_path = _stream_to_tempfile(url, client=client, timeout=300)
+    try:
+        result = _parse_bulk_zip_from_path(tmp_path, since_date)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    logger.info("CFPB bulk zip: %d complaints on or after %s", len(result), since_date)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
 
@@ -197,64 +380,6 @@ def _get_existing_complaint_ids(db: Session) -> set[str]:
     )
     rows = db.execute(stmt).scalars().all()
     return {r for r in rows if r}
-
-
-# ---------------------------------------------------------------------------
-# API fetch helpers
-# ---------------------------------------------------------------------------
-
-
-def _fetch_complaints_page(
-    since_date: date,
-    from_offset: int = 0,
-    *,
-    client: httpx.Client | None = None,
-) -> tuple[list[dict], int]:
-    """Fetch one page of complaints from the CFPB API.
-
-    Returns (hits_list, total_count).
-    """
-    page_size = get_settings().cfpb_page_size
-    params = {
-        "date_received_min": since_date.strftime("%Y-%m-%d"),
-        "size": page_size,
-        "from": from_offset,
-    }
-    resp = _get(_CFPB_API_URL, params=params, client=client)
-    data = resp.json()
-    if not isinstance(data, dict):
-        logger.warning("Unexpected CFPB API response type %s", type(data).__name__)
-        return [], 0
-    hits_outer = data.get("hits", {})
-    if not isinstance(hits_outer, dict):
-        return [], 0
-    hits = hits_outer.get("hits", [])
-    total = hits_outer.get("total", {})
-    total_count = total.get("value", 0) if isinstance(total, dict) else int(total or 0)
-    return hits if isinstance(hits, list) else [], total_count
-
-
-def _hits_to_complaints(hits: list[dict]) -> list[dict]:
-    """Flatten CFPB API hits into normalised complaint dicts.
-
-    Hits with a missing or blank ``_id`` are silently dropped; they cannot be
-    tracked for idempotency and would be re-ingested on every run.
-    """
-    complaints = []
-    for hit in hits:
-        if not isinstance(hit, dict):
-            continue
-        complaint_id = str(hit.get("_id") or "").strip()
-        if not complaint_id:
-            logger.warning("Dropping CFPB hit with missing _id: %r", hit)
-            continue
-        source = hit.get("_source") or {}
-        complaint = {
-            "complaint_id": complaint_id,
-            **{k: v for k, v in source.items()},
-        }
-        complaints.append(complaint)
-    return complaints
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +395,7 @@ def ingest_complaints(
     complaints: list[dict] | None = None,
     run_id: uuid.UUID | None = None,
 ) -> IngestResult:
-    """Ingest new complaints from the CFPB API.
+    """Ingest new complaints from the CFPB bulk CSV download.
 
     Parameters
     ----------
@@ -284,17 +409,7 @@ def ingest_complaints(
     result = IngestResult(run_id=run_id or uuid.uuid4())
 
     if complaints is None:
-        # Paginate through the full result set
-        raw_complaints: list[dict] = []
-        offset = 0
-        page_size = get_settings().cfpb_page_size
-        while True:
-            hits, total = _fetch_complaints_page(since_date, offset, client=client)
-            raw_complaints.extend(_hits_to_complaints(hits))
-            offset += page_size
-            if offset >= total or not hits:
-                break
-        complaints = raw_complaints
+        complaints = _fetch_bulk_complaints(since_date, client=client)
 
     result.total = len(complaints)
 
