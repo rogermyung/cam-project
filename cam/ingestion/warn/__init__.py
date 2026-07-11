@@ -110,6 +110,11 @@ def _fetch(url: str, *, client: httpx.Client | None = None) -> bytes:
     """
     breaker = get_breaker("warn")
 
+    # A browser-like User-Agent is required by some state WAFs — Michigan's
+    # Akamai edge returns 403 to the default httpx UA (python-httpx/...) but
+    # serves the same request normally with a Mozilla token.
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; CAM/1.0)"}
+
     @retry(
         retry=retry_if_exception(_is_retriable),
         wait=wait_exponential(multiplier=1, min=1, max=60),
@@ -118,12 +123,12 @@ def _fetch(url: str, *, client: httpx.Client | None = None) -> bytes:
     )
     def _request() -> bytes:
         if client is not None:
-            resp = client.get(url, timeout=60, follow_redirects=True)
+            resp = client.get(url, timeout=60, follow_redirects=True, headers=headers)
         else:
             from cam.config import get_settings
 
             timeout = get_settings().warn_http_timeout
-            resp = httpx.get(url, timeout=timeout, follow_redirects=True)
+            resp = httpx.get(url, timeout=timeout, follow_redirects=True, headers=headers)
         resp.raise_for_status()
         return resp.content
 
@@ -171,6 +176,31 @@ def _clean_name(raw: str | None) -> str:
 # ---------------------------------------------------------------------------
 # Format parsers
 # ---------------------------------------------------------------------------
+
+
+def _parse_by_format(content: bytes, cfg: StateConfig) -> list[WarnRecord]:
+    """Dispatch raw *content* to the parser for *cfg.format*.
+
+    Raises ValueError for an unknown format so callers can record it.  The
+    ``xlsx`` (California) and ``mi_json`` (Michigan) parsers live in their own
+    modules and are imported lazily to avoid a circular import (they import
+    ``WarnRecord`` from this package).
+    """
+    if cfg.format == "csv":
+        return _parse_csv(content, cfg)
+    if cfg.format == "html":
+        return _parse_html(content, cfg)
+    if cfg.format == "pdf":
+        return _parse_pdf(content, cfg)
+    if cfg.format == "xlsx":
+        from ._xlsx import parse_ca_xlsx
+
+        return parse_ca_xlsx(content)
+    if cfg.format == "mi_json":
+        from ._mi import parse_mi
+
+        return parse_mi(content)
+    raise ValueError(f"Unsupported format: {cfg.format!r}")
 
 
 def _parse_csv(content: bytes, cfg: StateConfig) -> list[WarnRecord]:
@@ -509,16 +539,7 @@ def ingest_state(
 
     # Parse
     try:
-        if cfg.format == "csv":
-            records = _parse_csv(content, cfg)
-        elif cfg.format == "html":
-            records = _parse_html(content, cfg)
-        elif cfg.format == "pdf":
-            records = _parse_pdf(content, cfg)
-        else:
-            result.errors += 1
-            result.error_details.append(f"Unsupported format: {cfg.format!r}")
-            return result
+        records = _parse_by_format(content, cfg)
     except Exception as exc:
         result.errors += 1
         result.error_details.append(f"Parse failed for {state_code}: {exc}")
@@ -593,17 +614,7 @@ def ingest_all_states(
 
         cfg = STATE_CONFIGS[code]
         try:
-            if cfg.format == "csv":
-                records = _parse_csv(data, cfg)
-            elif cfg.format == "html":
-                records = _parse_html(data, cfg)
-            elif cfg.format == "pdf":
-                records = _parse_pdf(data, cfg)
-            else:
-                result.errors += 1
-                result.error_details.append(f"Unsupported format: {cfg.format!r}")
-                results.append(result)
-                continue
+            records = _parse_by_format(data, cfg)
         except Exception as exc:
             result.errors += 1
             result.error_details.append(f"Parse failed: {exc}")

@@ -17,9 +17,10 @@ from tests.smoke._http import get_live
 # permanently red on issues already tracked. Do not add a state here just
 # because it failed once — that suppresses the exact drift this suite exists
 # to catch. Only add it once there's a known, documented root cause.
-_KNOWN_BROKEN = {
-    "CA": "CA switched CSV->XLSX in early 2026; old warn_report.csv URL 404s until XLSX ingestion ships",
-    "MI": "MI blocks non-browser clients with a 403 from its Akamai WAF as of March 2026",
+_KNOWN_BROKEN: dict[str, str] = {
+    # CA (XLSX) and MI (Sitecore JSON API + Mozilla UA to clear the Akamai WAF)
+    # were fixed in Phase 4 — both now fetch and parse live. Re-add a state here
+    # only with a documented root cause; see cam/ingestion/warn/state_urls.py.
 }
 
 _PARAMS = [

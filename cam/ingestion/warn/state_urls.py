@@ -44,21 +44,22 @@ class StateConfig:
 # ---------------------------------------------------------------------------
 
 STATE_CONFIGS: dict[str, StateConfig] = {
-    # CA switched from CSV to XLSX in early 2026 (warn_report1.xlsx).
-    # The old CSV URL (warn_report.csv) now returns 404.  Until XLSX ingestion
-    # is implemented this source will return 0 records gracefully.
-    # TODO: implement XLSX parsing and update URL to warn_report1.xlsx
+    # CA switched from CSV to a multi-sheet XLSX workbook in early 2026
+    # (warn_report1.xlsx); the old warn_report.csv URL now 404s.  Parsed by
+    # cam.ingestion.warn._xlsx.parse_ca_xlsx, which reads the "Detailed WARN
+    # Report" sheet directly — the ``columns`` map below is unused for xlsx and
+    # kept only as documentation of the source fields.
     "CA": StateConfig(
         state_code="CA",
-        url="https://edd.ca.gov/siteassets/files/jobs_and_training/warn/warn_report.csv",
-        format="csv",
+        url="https://edd.ca.gov/siteassets/files/jobs_and_training/warn/warn_report1.xlsx",
+        format="xlsx",
         columns={
             "company": "Company",
             "date": "Notice Date",
-            "employees": "No. Of Employees Affected",
-            "city": "City",
-            "county": "County",
-            "layoff_type": "Event Type",
+            "employees": "No. Of Employees",
+            "city": "Address",
+            "county": "County/Parish",
+            "layoff_type": "Layoff/Closure",
         },
         date_fmt="%m/%d/%Y",
     ),
@@ -152,19 +153,30 @@ STATE_CONFIGS: dict[str, StateConfig] = {
         },
         date_fmt="%m/%d/%Y",
     ),
-    # MI: 403 from Akamai WAF as of March 2026 — ingest will log an error and
-    # return 0 records until the state provides an alternative URL or format.
+    # MI retired the old .../wd/warn HTML page (now 404) in 2026.  The current
+    # notices come from the Sitecore search API behind the JS listing page at
+    # .../wd/data-public-notices/warn-notices, which returns a JSON envelope of
+    # HTML fragments.  Parsed by cam.ingestion.warn._mi.parse_mi.  The endpoint
+    # is guarded by an Akamai WAF that 403s non-browser clients — _fetch sends a
+    # Mozilla User-Agent to satisfy it.  p=500 returns the full result set.
     "MI": StateConfig(
         state_code="MI",
-        url="https://www.michigan.gov/leo/bureaus-agencies/wd/warn",
-        format="html",
+        url=(
+            "https://www.michigan.gov/leo/sxa/search/results/"
+            "?s={8E97AB1D-D2D4-47F8-8CC4-3F1039C8854F}"
+            "&itemid={BE81F7C2-36A8-4FDE-853C-B05B6E090055}"
+            "&sig=&autoFireSearch=true"
+            "&v={1FFFCC21-5151-4A2B-ABFC-F7FE4E5C9783}"
+            "&p=500&o=Created%20Date%20sort%2CDescending"
+        ),
+        format="mi_json",
         columns={
             "company": "Employer Name",
-            "date": "Warn Date",
-            "employees": "Employees Affected",
-            "city": "City",
+            "date": "Layoff date",
+            "employees": "Number of jobs impacted",
+            "city": "Site address",
             "county": "County",
-            "layoff_type": "Notice Type",
+            "layoff_type": "Type of company action",
         },
         date_fmt="%m/%d/%Y",
     ),

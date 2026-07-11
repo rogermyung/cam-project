@@ -26,6 +26,13 @@ This guide explains how to run the CAM pipeline, score entities, and interpret a
 # Start all infrastructure (Postgres, Redis, MinIO)
 docker-compose up -d
 
+# Create the S3/MinIO bucket EDGAR writes raw filings into (one-time).
+# Without it, EDGAR ingestion fails every filing with "NoSuchBucket" and
+# commits zero events. The bucket name must match S3_BUCKET (default below).
+docker exec cam-project-minio-1 sh -c \
+  'mc alias set local http://localhost:9000 minioadmin minioadmin && \
+   mc mb --ignore-existing local/cam-documents'
+
 # Apply database migrations
 DATABASE_URL=postgresql://cam:cam@localhost:5432/cam alembic upgrade head
 
@@ -38,6 +45,12 @@ DATABASE_URL=postgresql://cam:cam@localhost:5432/cam \
 DATABASE_URL=postgresql://cam:cam@localhost:5432/cam \
   EDGAR_USER_AGENT=you@example.com \
   python -m cam.entrypoint ingest --source all
+
+# Analyze: write Signal rows from ingested Events (REQUIRED before score —
+# the scorer reads Signals, so skipping this yields an empty dashboard)
+DATABASE_URL=postgresql://cam:cam@localhost:5432/cam \
+  EDGAR_USER_AGENT=you@example.com \
+  python -m cam.entrypoint analyze --date today
 
 # Score all entities for today
 DATABASE_URL=postgresql://cam:cam@localhost:5432/cam \

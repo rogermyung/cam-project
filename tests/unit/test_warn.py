@@ -42,9 +42,29 @@ from cam.ingestion.warn import (
     ingest_all_states,
     ingest_state,
 )
-from cam.ingestion.warn.state_urls import STATE_CONFIGS
+from cam.ingestion.warn.state_urls import STATE_CONFIGS, StateConfig
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "warn"
+
+# California moved from CSV to XLSX in 2026 (see cam.ingestion.warn._xlsx and
+# tests/unit/test_warn_ca_xlsx.py). The CSV-parser and CSV-ingest-flow tests
+# below still need a CSV source to exercise; this synthetic config carries the
+# column headers of the committed ``ca_warn_sample.csv`` fixture. The ``ca_csv``
+# fixture registers it as STATE_CONFIGS["CA"] for the duration of a test.
+CA_CSV_CONFIG = StateConfig(
+    state_code="CA",
+    url="https://edd.ca.gov/siteassets/files/jobs_and_training/warn/warn_report.csv",
+    format="csv",
+    columns={
+        "company": "Company",
+        "date": "Notice Date",
+        "employees": "No. Of Employees Affected",
+        "city": "City",
+        "county": "County",
+        "layoff_type": "Event Type",
+    },
+    date_fmt="%m/%d/%Y",
+)
 
 # ---------------------------------------------------------------------------
 # In-memory SQLite database fixture
@@ -79,6 +99,17 @@ def mock_warn_entity_resolution(monkeypatch):
         ]
 
     monkeypatch.setattr("cam.ingestion.warn.bulk_resolve", _fake_bulk_resolve)
+
+
+@pytest.fixture()
+def ca_csv(monkeypatch):
+    """Register CA as its pre-2026 CSV source for CSV-flow tests.
+
+    Production CA is now ``xlsx``; these tests predate that and exercise the
+    generic CSV ingest path using the ``ca_warn_sample.csv`` fixture.
+    """
+    monkeypatch.setitem(STATE_CONFIGS, "CA", CA_CSV_CONFIG)
+    return CA_CSV_CONFIG
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +149,17 @@ def test_state_configs_have_required_columns():
 
 def test_state_configs_known_formats():
     for code, cfg in STATE_CONFIGS.items():
-        assert cfg.format in ("csv", "html", "pdf"), f"{code}: unknown format {cfg.format!r}"
+        assert cfg.format in ("csv", "html", "pdf", "xlsx", "mi_json"), (
+            f"{code}: unknown format {cfg.format!r}"
+        )
+
+
+def test_ca_config_is_xlsx_and_mi_is_json():
+    """Guard the 2026 source migrations: CA -> XLSX, MI -> Sitecore JSON API."""
+    assert STATE_CONFIGS["CA"].format == "xlsx"
+    assert STATE_CONFIGS["CA"].url.endswith(".xlsx")
+    assert STATE_CONFIGS["MI"].format == "mi_json"
+    assert "sxa/search/results" in STATE_CONFIGS["MI"].url
 
 
 # ---------------------------------------------------------------------------
@@ -179,13 +220,13 @@ def test_clean_name_none():
 
 def test_parse_csv_ca_returns_records():
     content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
-    records = _parse_csv(content, STATE_CONFIGS["CA"])
+    records = _parse_csv(content, CA_CSV_CONFIG)
     assert len(records) == 5
 
 
 def test_parse_csv_ca_first_record_fields():
     content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
-    records = _parse_csv(content, STATE_CONFIGS["CA"])
+    records = _parse_csv(content, CA_CSV_CONFIG)
     first = records[0]
     assert first.company == "TechCorp Solutions Inc"
     assert first.notice_date == date(2023, 3, 15)
@@ -198,7 +239,7 @@ def test_parse_csv_ca_first_record_fields():
 def test_parse_csv_ca_strips_location_suffix():
     """'Bay Area Logistics Co - OAKLAND' should become 'Bay Area Logistics Co'."""
     content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
-    records = _parse_csv(content, STATE_CONFIGS["CA"])
+    records = _parse_csv(content, CA_CSV_CONFIG)
     companies = [r.company for r in records]
     assert "Bay Area Logistics Co" in companies
     assert "Bay Area Logistics Co - OAKLAND" not in companies
@@ -206,7 +247,7 @@ def test_parse_csv_ca_strips_location_suffix():
 
 def test_parse_csv_ca_all_dates_parseable():
     content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
-    records = _parse_csv(content, STATE_CONFIGS["CA"])
+    records = _parse_csv(content, CA_CSV_CONFIG)
     for rec in records:
         assert rec.notice_date is not None, f"{rec.company} has unparseable date"
 
@@ -323,7 +364,7 @@ def test_parse_pdf_empty_table_returns_empty():
 # ---------------------------------------------------------------------------
 
 
-def test_ingest_state_ca_ingests_records(db):
+def test_ingest_state_ca_ingests_records(db, ca_csv):
     content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
     client = _make_client(content)
     result = ingest_state("CA", db=db, client=client)
@@ -332,7 +373,7 @@ def test_ingest_state_ca_ingests_records(db):
     assert result.errors == 0
 
 
-def test_ingest_state_ca_creates_events_in_db(db):
+def test_ingest_state_ca_creates_events_in_db(db, ca_csv):
     content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
     client = _make_client(content)
     ingest_state("CA", db=db, client=client)
@@ -340,7 +381,7 @@ def test_ingest_state_ca_creates_events_in_db(db):
     assert len(events) == 5
 
 
-def test_ingest_state_ca_event_type_warn_notice(db):
+def test_ingest_state_ca_event_type_warn_notice(db, ca_csv):
     content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
     client = _make_client(content)
     ingest_state("CA", db=db, client=client)
@@ -348,7 +389,7 @@ def test_ingest_state_ca_event_type_warn_notice(db):
     assert len(events) == 5
 
 
-def test_ingest_state_ca_since_date_filters(db):
+def test_ingest_state_ca_since_date_filters(db, ca_csv):
     """Records before since_date must be excluded."""
     content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
     client = _make_client(content)
@@ -362,7 +403,7 @@ def test_ingest_state_ca_since_date_filters(db):
 # ---------------------------------------------------------------------------
 
 
-def test_ingest_state_idempotent_second_run_skips_all(db):
+def test_ingest_state_idempotent_second_run_skips_all(db, ca_csv):
     content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
     client = _make_client(content)
     ingest_state("CA", db=db, client=client)
@@ -399,7 +440,7 @@ def test_idempotency_key_differs_by_date():
 # ---------------------------------------------------------------------------
 
 
-def test_ingest_state_ca_entity_resolution_attempted(db):
+def test_ingest_state_ca_entity_resolution_attempted(db, ca_csv):
     """Entity resolution is attempted: every event has a company name in raw_json.
 
     In unit tests with a fresh SQLite DB there are no pre-existing entities, so
@@ -415,7 +456,7 @@ def test_ingest_state_ca_entity_resolution_attempted(db):
         assert event.raw_json.get("company"), "Event raw_json must include company name"
 
 
-def test_ingest_state_ca_event_description_contains_company(db):
+def test_ingest_state_ca_event_description_contains_company(db, ca_csv):
     content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
     client = _make_client(content)
     ingest_state("CA", db=db, client=client)
@@ -482,7 +523,7 @@ def test_ingest_state_fetch_failure_returns_error(db):
 # ---------------------------------------------------------------------------
 
 
-def test_ingest_all_states_returns_one_result_per_state(db):
+def test_ingest_all_states_returns_one_result_per_state(db, ca_csv):
     """Each configured state must produce exactly one IngestResult."""
     ca_content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
     tx_content = (FIXTURES / "tx_warn_sample.html").read_bytes()
@@ -502,7 +543,7 @@ def test_ingest_all_states_returns_one_result_per_state(db):
     assert codes == set(STATE_CONFIGS.keys())
 
 
-def test_ingest_all_states_no_duplicates(db):
+def test_ingest_all_states_no_duplicates(db, ca_csv):
     """Running ingest_all_states twice must not duplicate events."""
     ca_content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
 
@@ -581,7 +622,7 @@ def test_parse_csv_performance():
     """Parsing CA CSV must complete in under 100 ms."""
     content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
     start = time.perf_counter()
-    _parse_csv(content, STATE_CONFIGS["CA"])
+    _parse_csv(content, CA_CSV_CONFIG)
     elapsed = (time.perf_counter() - start) * 1000
     assert elapsed < 100, f"_parse_csv took {elapsed:.1f} ms"
 
@@ -626,7 +667,7 @@ def test_fetch_client_follows_redirects():
 # ---------------------------------------------------------------------------
 
 
-def test_ingest_state_commits_once(db):
+def test_ingest_state_commits_once(db, ca_csv):
     """ingest_state must issue exactly one db.commit() regardless of record count."""
     content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
     client = _make_client(content)
@@ -643,7 +684,7 @@ def test_ingest_state_commits_once(db):
     assert len(commit_calls) == 1, f"Expected 1 commit, got {len(commit_calls)}"
 
 
-def test_ingest_all_states_commits_once(db):
+def test_ingest_all_states_commits_once(db, ca_csv):
     """ingest_all_states must issue exactly one db.commit() for the full batch."""
     ca_content = (FIXTURES / "ca_warn_sample.csv").read_bytes()
 
@@ -696,7 +737,7 @@ def test_idempotency_key_none_date_differs_from_dated_key():
     assert dated != no_date
 
 
-def test_ingest_state_two_no_date_records_both_ingested(db):
+def test_ingest_state_two_no_date_records_both_ingested(db, ca_csv):
     """Two records with None notice_date but different raw content must both be ingested."""
     import csv
     import io as _io

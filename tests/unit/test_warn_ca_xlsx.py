@@ -68,6 +68,15 @@ def test_notice_dates_parsed_for_all_rows():
         assert isinstance(rec.notice_date, date)
 
 
+def test_raw_is_json_serializable():
+    import json
+
+    # raw is persisted into Event.raw_json, so every value must be
+    # JSON-serializable — datetime cells must be coerced, not stored raw.
+    for rec in _load():
+        json.dumps(rec.raw)
+
+
 def test_company_with_parenthetical_preserved():
     companies = {r.company for r in _load()}
     # Company names must not be truncated at punctuation.
