@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
+from datetime import date
+
 import cam.entrypoint
 
 
@@ -66,3 +69,47 @@ class TestIngestGuardrail:
         assert exit_code == 0
         assert call_counts.get("osha", 0) == 1
         assert call_counts.get("epa", 0) == 1
+
+
+class TestIngestSourceReturnsInt:
+    """_ingest_source must return an int count for every source.
+
+    The per-source ingest functions (epa, cfpb, edgar) return IngestResult
+    objects; _ingest_source must unwrap them to .ingested so the guardrail's
+    ``total_ingested += count`` arithmetic works.  Regression test for the
+    TypeError seen in the 2026-07-10 e2e run.
+    """
+
+    @staticmethod
+    def _args() -> argparse.Namespace:
+        return argparse.Namespace(source=["all"], since=date(2025, 1, 1))
+
+    def test_epa_returns_int(self, monkeypatch):
+        from cam.ingestion.base import IngestResult
+
+        monkeypatch.setattr(
+            "cam.ingestion.epa.ingest_echo_violations",
+            lambda **kw: IngestResult(ingested=7),
+        )
+        count = cam.entrypoint._ingest_source("epa", date(2025, 1, 1), self._args())
+        assert count == 7
+
+    def test_cfpb_returns_int(self, monkeypatch):
+        from cam.ingestion.base import IngestResult
+
+        monkeypatch.setattr(
+            "cam.ingestion.cfpb.ingest_complaints",
+            lambda **kw: IngestResult(ingested=3),
+        )
+        count = cam.entrypoint._ingest_source("cfpb", date(2025, 1, 1), self._args())
+        assert count == 3
+
+    def test_edgar_returns_int(self, monkeypatch):
+        from cam.ingestion.base import IngestResult
+
+        monkeypatch.setattr(
+            "cam.ingestion.edgar.ingest_all_10k",
+            lambda *a, **kw: IngestResult(ingested=2),
+        )
+        count = cam.entrypoint._ingest_source("edgar", date(2025, 1, 1), self._args())
+        assert count == 2

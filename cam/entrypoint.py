@@ -140,17 +140,17 @@ def _ingest_source(source: str, since: date, args: argparse.Namespace) -> int:
         from cam.ingestion.epa import ingest_echo_violations
 
         with get_session() as db:
-            count = ingest_echo_violations(since_date=since, db=db)
-        logger.info("epa: %s records ingested", count)
-        return count
+            result = ingest_echo_violations(since_date=since, db=db)
+        logger.info("epa: %s records ingested", result.ingested)
+        return result.ingested
 
     elif source == "cfpb":
         from cam.ingestion.cfpb import ingest_complaints
 
         with get_session() as db:
-            count = ingest_complaints(since_date=since, db=db)
-        logger.info("cfpb: %s records ingested", count)
-        return count
+            result = ingest_complaints(since_date=since, db=db)
+        logger.info("cfpb: %s records ingested", result.ingested)
+        return result.ingested
 
     elif source == "warn":
         from cam.ingestion.warn import ingest_all_states
@@ -164,9 +164,9 @@ def _ingest_source(source: str, since: date, args: argparse.Namespace) -> int:
         from cam.ingestion.edgar import ingest_all_10k
 
         with get_session() as db:
-            count = ingest_all_10k(since_date=since, entity_ids=None, db=db)
-        logger.info("edgar: %s filings ingested", count)
-        return count
+            result = ingest_all_10k(since_date=since, entity_ids=None, db=db)
+        logger.info("edgar: %s filings ingested", result.ingested)
+        return result.ingested
 
     else:
         raise ValueError(f"Unknown source: {source!r}")

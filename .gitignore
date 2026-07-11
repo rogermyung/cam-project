@@ -40,3 +40,6 @@ Thumbs.db
 
 # Docker
 *.log
+
+# Static site build output (Vite build + Python export target)
+/site
