@@ -75,3 +75,12 @@ def test_all_employee_counts_are_ints():
 def test_all_notice_dates_parsed():
     for rec in _load():
         assert isinstance(rec.notice_date, date)
+
+
+def test_multi_site_address_kept_in_city():
+    # Rec Boat Holdings lists several site addresses in a nested <ul>; the
+    # normalized city field must still carry location context, not be blanked.
+    recs = {r.company: r for r in _load()}
+    rec = recs["Rec Boat Holdings, LLC"]
+    assert rec.city, "multi-site notice should not have an empty city"
+    assert "Cadillac" in rec.city

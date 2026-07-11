@@ -104,16 +104,17 @@ def _is_retriable(exc: BaseException) -> bool:
 def _fetch(url: str, *, client: httpx.Client | None = None) -> bytes:
     """GET *url* with retry; returns raw response bytes.
 
-    The HTTP timeout is loaded from ``cam.config`` Settings (``warn_http_timeout``,
-    default 60 s) when making live requests.  Injected clients (used in tests)
-    are called with a fixed 60 s timeout since the mock ignores the value.
+    The HTTP timeout and User-Agent are loaded from ``cam.config`` Settings
+    (``warn_http_timeout``, ``warn_user_agent``) when making live requests.  A
+    browser-like User-Agent is required by some state WAFs — Michigan's Akamai
+    edge returns 403 to the default httpx UA (python-httpx/...) but serves the
+    same request normally with a Mozilla token.
     """
-    breaker = get_breaker("warn")
+    from cam.config import get_settings
 
-    # A browser-like User-Agent is required by some state WAFs — Michigan's
-    # Akamai edge returns 403 to the default httpx UA (python-httpx/...) but
-    # serves the same request normally with a Mozilla token.
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; CAM/1.0)"}
+    breaker = get_breaker("warn")
+    settings = get_settings()
+    headers = {"User-Agent": settings.warn_user_agent}
 
     @retry(
         retry=retry_if_exception(_is_retriable),
@@ -125,10 +126,12 @@ def _fetch(url: str, *, client: httpx.Client | None = None) -> bytes:
         if client is not None:
             resp = client.get(url, timeout=60, follow_redirects=True, headers=headers)
         else:
-            from cam.config import get_settings
-
-            timeout = get_settings().warn_http_timeout
-            resp = httpx.get(url, timeout=timeout, follow_redirects=True, headers=headers)
+            resp = httpx.get(
+                url,
+                timeout=settings.warn_http_timeout,
+                follow_redirects=True,
+                headers=headers,
+            )
         resp.raise_for_status()
         return resp.content
 

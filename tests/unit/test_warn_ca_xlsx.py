@@ -16,11 +16,19 @@ copy of the real state workbook).
 
 from __future__ import annotations
 
+import io
 from datetime import date
 from pathlib import Path
 
+import openpyxl
+import pytest
+
 from cam.ingestion.warn import WarnRecord
-from cam.ingestion.warn._xlsx import parse_ca_xlsx
+from cam.ingestion.warn._xlsx import (
+    CaXlsxStructureError,
+    _parse_xlsx_employees,
+    parse_ca_xlsx,
+)
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "warn" / "ca_warn_report.xlsx"
 
@@ -82,3 +90,51 @@ def test_company_with_parenthetical_preserved():
     # Company names must not be truncated at punctuation.
     assert any(c.startswith("Kingdom Animalia") for c in companies)
     assert "Chevron" in companies
+
+
+def test_employee_count_accepts_integral_float():
+    # openpyxl commonly types numeric cells as float; integral floats must be
+    # kept (15.0 -> 15), non-integral rejected.
+    assert _parse_xlsx_employees(15.0) == 15
+    assert _parse_xlsx_employees(1200.0) == 1200
+    assert _parse_xlsx_employees(0.0) is None
+    assert _parse_xlsx_employees(3.5) is None
+    assert _parse_xlsx_employees(True) is None  # bool is not a count
+
+
+def _workbook_bytes(sheet_name: str, rows: list[list]) -> bytes:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = sheet_name
+    for row in rows:
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_missing_sheet_raises_structure_error():
+    # Upstream drift (renamed/removed sheet) must be a loud parse error, not a
+    # silent empty result that reads as "0 notices this week".
+    content = _workbook_bytes("Some Other Sheet", [["banner"], ["Company"], ["X"]])
+    with pytest.raises(CaXlsxStructureError):
+        parse_ca_xlsx(content)
+
+
+def test_missing_required_column_raises_structure_error():
+    # Header present but the Company column is gone -> structural failure.
+    content = _workbook_bytes(
+        "Detailed WARN Report",
+        [["banner"], ["County/Parish", "Notice Date", "No. Of Employees"], ["LA", "01/01/2026", 5]],
+    )
+    with pytest.raises(CaXlsxStructureError):
+        parse_ca_xlsx(content)
+
+
+def test_valid_sheet_with_no_data_rows_returns_empty():
+    # A valid layout with zero notices is legitimate, not an error.
+    content = _workbook_bytes(
+        "Detailed WARN Report",
+        [["banner"], ["Company", "Notice Date", "No. Of Employees"]],
+    )
+    assert parse_ca_xlsx(content) == []

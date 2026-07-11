@@ -72,6 +72,15 @@ class Settings(BaseSettings):
     warn_http_timeout: int = Field(
         default=60, description="HTTP timeout in seconds for WARN state fetches"
     )
+    warn_user_agent: str = Field(
+        default="Mozilla/5.0 (compatible; CAM/1.0)",
+        description=(
+            "User-Agent header for WARN state fetches. A browser-like token is "
+            "required by some state WAFs (notably Michigan's Akamai edge, which "
+            "403s the default httpx UA). Tunable per environment if a state "
+            "tightens its bot filtering."
+        ),
+    )
 
     # EPA ECHO ingestion (M4)
     echo_bulk_zip_url: str = Field(

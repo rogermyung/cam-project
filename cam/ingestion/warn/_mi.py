@@ -75,8 +75,11 @@ def parse_mi(content: bytes) -> list[WarnRecord]:
             if not label:
                 continue
 
-            # Value extraction: decode entities by using get_text.
-            has_nested_list = li.find("ul") is not None
+            # Value extraction: decode entities by using get_text. For a
+            # "Site addresses" notice with a nested <ul>, get_text recurses, so
+            # value_text already holds all site addresses concatenated — keep it
+            # rather than blanking city (multi-site events still get location
+            # context in the Event description).
             strong.extract()  # remove the label part so remaining text is the value
             value_text = li.get_text(" ", strip=True)
             value_text = (value_text or "").strip()
@@ -86,7 +89,7 @@ def parse_mi(content: bytes) -> list[WarnRecord]:
 
             if label in ("Site address", "Site addresses"):
                 city_seen = True
-                city_best_effort = "" if has_nested_list else value_text
+                city_best_effort = value_text
 
         records.append(
             WarnRecord(
