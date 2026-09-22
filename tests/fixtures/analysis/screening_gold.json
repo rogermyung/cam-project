@@ -1,0 +1,143 @@
+{
+  "_comment": [
+    "Labelled gold set for the M9/M10 screening judgments.",
+    "",
+    "Used two ways: tests/unit/test_jev_screening.py measures the keyword",
+    "baseline offline (no key, no network), and tests/smoke/test_jev_screening.py",
+    "measures Jev against the same cases and asserts it beats that baseline.",
+    "",
+    "Cases were chosen to include the failure modes substring matching cannot",
+    "handle: negation, bare-word coincidence, and topics that share vocabulary",
+    "but differ in what the proposal actually asks for. The `note` on each case",
+    "says what it is testing. Extend this file rather than loosening a floor."
+  ],
+
+  "proposal_topics": [
+    {
+      "text": "RESOLVED: Shareholders request the Board report on the effectiveness of the Company's supplier auditing program in detecting forced labor in tier-2 facilities.",
+      "expected": "supply_chain",
+      "note": "plain case; keyword table gets this"
+    },
+    {
+      "text": "RESOLVED: Shareholders request an annual report on the Company's greenhouse gas emissions across Scope 1, 2 and 3, with targets aligned to the Paris Agreement.",
+      "expected": "environmental",
+      "note": "plain case"
+    },
+    {
+      "text": "RESOLVED: Shareholders request the Compensation Committee report on the alignment between CEO pay and the Company's median worker pay ratio.",
+      "expected": "executive_pay",
+      "note": "plain case"
+    },
+    {
+      "text": "RESOLVED: Shareholders request the Board report on the Company's political contributions and trade association dues, including payments used for lobbying.",
+      "expected": "political_spending",
+      "note": "plain case"
+    },
+    {
+      "text": "RESOLVED: Shareholders request an annual report on the Company's workforce diversity data, disaggregated by gender and race at each job category.",
+      "expected": "diversity",
+      "note": "plain case"
+    },
+    {
+      "text": "RESOLVED: Shareholders request the Board adopt a policy requiring shareholder approval before the Company issues shares representing more than 20% of outstanding stock.",
+      "expected": "other",
+      "note": "governance mechanics; no topic applies"
+    },
+    {
+      "text": "RESOLVED: Shareholders request the Board amend the bylaws to permit holders of 10% of outstanding shares to call a special meeting.",
+      "expected": "other",
+      "note": "governance mechanics"
+    },
+    {
+      "text": "RESOLVED: Shareholders request the Board report on risks arising from the Company's use of arbitration clauses in employment contracts, including their effect on workers' ability to pursue harassment claims.",
+      "expected": "worker_welfare",
+      "note": "about the company's own workforce; contains no word from the worker_welfare list"
+    },
+    {
+      "text": "RESOLVED: Shareholders request a report on the human rights impacts of the Company's operations on communities near its own facilities, excluding supplier operations.",
+      "expected": "other",
+      "note": "explicitly excludes suppliers; keyword table fires supply_chain on 'human rights'"
+    },
+    {
+      "text": "RESOLVED: Shareholders request a report assessing whether the Company's lobbying on climate policy is consistent with its stated emissions targets.",
+      "expected": "political_spending",
+      "note": "ambiguous by design; the ask is about lobbying alignment, not emissions. Keyword table fires environmental first"
+    },
+    {
+      "text": "RESOLVED: Shareholders request the Board report on pay equity across gender and racial groups within the Company's workforce.",
+      "expected": "diversity",
+      "note": "contains 'pay'; keyword table may fire executive_pay"
+    },
+    {
+      "text": "RESOLVED: Shareholders request the Board report on the Company's efforts to reduce injury rates among warehouse staff, including audit findings from third-party safety inspectors.",
+      "expected": "worker_welfare",
+      "note": "contains 'audit'; keyword table fires supply_chain first"
+    },
+    {
+      "text": "RESOLVED: Shareholders request the Board report on the Company's water usage and discharge permits at its manufacturing sites.",
+      "expected": "environmental",
+      "note": "no keyword from the environmental list appears"
+    },
+    {
+      "text": "RESOLVED: Shareholders request the Company disclose the total compensation of its five most highly paid non-executive employees.",
+      "expected": "worker_welfare",
+      "note": "explicitly non-executive; 'compensation' pulls the keyword table to executive_pay"
+    },
+    {
+      "text": "RESOLVED: Shareholders request the Board report on the Company's process for verifying that cobalt in its products is not mined with child labor.",
+      "expected": "supply_chain",
+      "note": "plain case"
+    }
+  ],
+
+  "merger_factors": [
+    {
+      "target": "A regional hospital system operating twelve acute-care facilities.",
+      "deal": "The acquirer, a national health insurer, will integrate the target's provider network with its existing health plan membership.",
+      "expected_factors": ["payer_plus_provider"],
+      "note": "plain case; keyword table gets this"
+    },
+    {
+      "target": "An independent e-commerce seller of household goods.",
+      "deal": "The acquirer operates the online marketplace on which the target currently sells, and will bring the target's catalogue in-house.",
+      "expected_factors": ["platform_plus_seller"],
+      "note": "plain case"
+    },
+    {
+      "target": "A manufacturer of consumer electronics accessories.",
+      "deal": "The acquirer does not operate a marketplace and has no insurance business. The two companies serve entirely separate customer bases with numerous alternative suppliers available.",
+      "expected_factors": [],
+      "note": "negation; keyword table fires platform_plus_seller and payer_plus_provider on the denial itself"
+    },
+    {
+      "target": "A commercial landscaping business with operations in four states.",
+      "deal": "The acquirer will fund the transaction partly through proceeds from a life insurance policy held on its founder.",
+      "expected_factors": [],
+      "note": "bare-word coincidence; 'insurance' alone scores 1.5 of 9.0 under the keyword table"
+    },
+    {
+      "target": "A regional freight brokerage.",
+      "deal": "The acquirer owns the only rail terminal serving the corridor, which the target's competitors must use to reach the port.",
+      "expected_factors": ["controls_bottleneck_input"],
+      "note": "the economic theory is present but none of the bottleneck keywords appear"
+    },
+    {
+      "target": "A generic drug manufacturer.",
+      "deal": "The acquirer is a pharmacy benefit manager that sets the formulary tiers determining reimbursement for the target's products, and also owns a competing generics business.",
+      "expected_factors": ["payer_plus_provider", "price_setter_plus_competitor"],
+      "note": "two factors at once"
+    },
+    {
+      "target": "A regional grocery chain with 8% share of a fragmented market.",
+      "deal": "The combined entity would face numerous competitors; the pre-merger HHI in the served market is 1,150.",
+      "expected_factors": [],
+      "note": "numeric HHI below threshold; must not trigger"
+    },
+    {
+      "target": "A specialty chemical producer.",
+      "deal": "Post-merger HHI in the relevant market is estimated at 3,400, up from 2,900 pre-merger.",
+      "expected_factors": ["high_hhi_either_market"],
+      "note": "numeric HHI above threshold; arithmetic, owned by code"
+    }
+  ]
+}

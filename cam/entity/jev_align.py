@@ -630,23 +630,15 @@ def _levels(merge_level: float | None, review_level: float | None) -> tuple[floa
 def _default_client() -> _SystemOneClient:
     """Build a TypeSafe client from settings.
 
-    Raises rather than returning a stub when the key is missing: a silent
-    no-op client would look like "Jev found no matches" and hide a
-    misconfiguration behind an empty dashboard, which is the failure mode this
-    whole branch exists to remove.
+    Delegates to :func:`cam.jev.default_client` so entity alignment and the
+    analysis screeners construct their clients the same way. It raises rather
+    than returning a stub when the key is missing: a silent no-op client would
+    look like "Jev found no matches" and hide a misconfiguration behind an
+    empty dashboard, which is the failure mode this branch exists to remove.
     """
-    from typesafe_sdk import TypeSafeClient
+    from cam import jev
 
-    from cam.config import get_settings
-
-    settings = get_settings()
-    if not settings.typesafe_api_key:
-        raise RuntimeError(
-            "TYPESAFE_API_KEY is not set; cannot use Jev entity alignment. "
-            "Set it in .env, or leave ENTITY_JEV_ENABLED unset to resolve "
-            "with rapidfuzz only."
-        )
-    return TypeSafeClient(api_key=settings.typesafe_api_key, model=settings.jev_model)
+    return jev.default_client()
 
 
 __all__ = [

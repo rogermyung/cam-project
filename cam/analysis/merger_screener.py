@@ -3,12 +3,23 @@ HSR Merger Screener (M10).
 
 Scores proposed merger transactions for vertical integration risk. Flags deals
 where the acquirer controls a bottleneck input that the target's competitors
-depend on, combining regulatory precedent with keyword-based market structure
-analysis.
+depend on, combining regulatory precedent with market structure analysis.
 
-The ``score_merger`` function accepts an optional ``prior_merger_lookup``
-callable so that unit tests can exercise the prior-history path without a
-live database.
+Factor detection has two implementations behind one seam. The default reads
+substrings from :data:`_FACTOR_KEYWORDS`; it is deterministic and free, but it
+cannot see negation ("we do not operate a marketplace" triggers
+``platform_plus_seller``) and fires on bare words (any mention of "insurance"
+scores 1.5 of 9.0 on ``payer_plus_provider``). :func:`jev_factor_detector`
+asks Jev one Noul per factor instead, all in a single batched request, and
+falls back to the keyword detector if the service is unavailable.
+
+Only the judgments move. The weights, the normalisation, the HHI > 2500
+arithmetic, the precedent citations and the review-focus text all stay in
+code, because none of them need semantic understanding.
+
+``score_merger`` accepts an optional ``prior_merger_lookup`` callable so that
+unit tests can exercise the prior-history path without a live database, and an
+optional ``detector`` so they can exercise scoring without a model.
 """
 
 from __future__ import annotations
@@ -118,10 +129,27 @@ _FACTOR_KEYWORDS: dict[str, list[str]] = {
     ],
 }
 
+# Factors decidable from the deal text alone. Excludes
+# prior_vertical_merger_same_firm, which comes from the database rather than
+# the text, and is therefore never asked of a model.
+TEXT_FACTORS: list[str] = [
+    "controls_bottleneck_input",
+    "payer_plus_provider",
+    "platform_plus_seller",
+    "price_setter_plus_competitor",
+    "high_hhi_either_market",
+]
+
 # Regex to extract numeric HHI values from text (e.g. "HHI of 2,800" or "HHI exceeding 2500").
 # Captures the digits after "hhi" with optional separators.
+#
+# The 60-character window is wider than it looks safe: the [^0-9] class cannot
+# cross an intervening number, so the match still cannot skip past a nearer
+# figure to reach a further one. 30 was too tight for ordinary regulatory
+# phrasing — "HHI in the relevant market is estimated at 3,400" puts 40
+# characters between the two, and was silently missed.
 _HHI_NUMERIC_RE = re.compile(
-    r"\bhhi\b[^0-9]{0,30}(\d[\d,]*)",
+    r"\bhhi\b[^0-9]{0,60}(\d[\d,]*)",
     re.IGNORECASE,
 )
 _HHI_THRESHOLD = 2500  # PLAN.md: "HHI > 2500 in either pre-merger market"
@@ -213,6 +241,13 @@ class MergerRiskScore:
     market_overlap_description: str = ""
     comparable_past_cases: list[str] = field(default_factory=list)
     recommended_review_focus: str = ""
+    # Per-factor probability, when a detector supplies one. The keyword
+    # detector leaves this empty; the Jev detector fills it with calibrated
+    # probabilities. ``score`` is deliberately still computed from the
+    # thresholded factor set, so this field changes nothing today — it is
+    # here so a probability-weighted composite can be evaluated later
+    # against stored judgments, without re-running inference.
+    factor_confidence: dict[str, float] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +292,21 @@ def _detect_text_factors(combined_text: str) -> set[str]:
     if _detect_high_hhi(combined_text):
         detected.add("high_hhi_either_market")
     return detected
+
+
+def keyword_detector(
+    target_description: str,
+    deal_description: str,
+) -> tuple[set[str], dict[str, float]]:
+    """Substring detection, in the detector seam's shape. The default.
+
+    Wraps :func:`_detect_text_factors` rather than changing it, so the helper
+    keeps the single-argument signature its tests exercise directly. The
+    empty confidence map is honest: substring matching is binary and has no
+    probability to report.
+    """
+    detected = _detect_text_factors(f"{target_description} {deal_description}")
+    return detected, {}
 
 
 def _generate_overlap_description(factors: list[str]) -> str:
@@ -317,6 +367,172 @@ def _collect_comparable_cases(factors: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Jev-backed factor detection
+# ---------------------------------------------------------------------------
+
+# One Noul per text-decidable factor. Each states the economic theory the
+# factor stands for, because that is what a regulator is actually screening
+# for — the keyword lists were only ever a proxy for it. `not_for` cases are
+# the false positives the keyword detector produced in practice.
+_FACTOR_QUESTIONS: dict[str, dict[str, str]] = {
+    "controls_bottleneck_input": {
+        "question": (
+            "Does the acquirer control an input, facility, or distribution "
+            "channel that the target's competitors depend on and cannot "
+            "readily obtain elsewhere?"
+        ),
+        "focus": (
+            "The test is dependence without a practical alternative, not "
+            "whether the deal description happens to use words like "
+            "'critical' or 'network'."
+        ),
+        "not_for": (
+            "A supplier competing against several viable alternatives, or a "
+            "deal that merely operates infrastructure without others "
+            "depending on it."
+        ),
+    },
+    "payer_plus_provider": {
+        "question": (
+            "Would this transaction put the entity that pays for care and the "
+            "entity that delivers or dispenses it under common ownership?"
+        ),
+        "focus": (
+            "Insurers, health plans, and pharmacy benefit managers pay; "
+            "hospitals, clinics, physician groups, and pharmacies deliver. "
+            "Both sides must be present in the combined entity."
+        ),
+        "not_for": (
+            "A company that merely carries insurance, mentions health "
+            "coverage as an employee benefit, or operates in healthcare "
+            "without spanning both sides."
+        ),
+    },
+    "platform_plus_seller": {
+        "question": (
+            "Is a marketplace or platform operator acquiring a business that "
+            "sells or competes on that same platform?"
+        ),
+        "focus": "The concern is the operator gaining an incentive to self-preference.",
+        "not_for": (
+            "Two sellers on someone else's platform combining, or a platform "
+            "acquiring infrastructure rather than a participant."
+        ),
+    },
+    "price_setter_plus_competitor": {
+        "question": (
+            "Would the combined entity both set the prices or reimbursement "
+            "rates for a market and compete in that same market?"
+        ),
+        "focus": (
+            "The concern is the ability and incentive to discriminate against "
+            "downstream rivals through the rates it sets."
+        ),
+        "not_for": "A company that simply has pricing power over its own products.",
+    },
+    "high_hhi_either_market": {
+        "question": (
+            "Does the text describe either pre-merger market as highly "
+            "concentrated — dominated by a few firms?"
+        ),
+        "focus": (
+            "Judge the qualitative description only. Explicit numeric HHI "
+            "values are checked separately in code against the 2,500 "
+            "threshold, so do not try to estimate one."
+        ),
+        "not_for": ("A market described as competitive, fragmented, or with many participants."),
+    },
+}
+
+
+def build_factor_questions() -> dict:
+    """Build the Noul batch, one question per text-decidable factor."""
+    from typesafe_sdk import Noul
+
+    return {
+        factor: Noul(
+            instructions={
+                "question": spec["question"],
+                "focus": spec["focus"],
+                "source": (
+                    "`target_description` and `deal_description` are free text "
+                    "from an FTC or DOJ filing or press release."
+                ),
+            },
+            criteria={"true": spec["question"], "false": spec["not_for"]},
+        )
+        for factor, spec in _FACTOR_QUESTIONS.items()
+    }
+
+
+def jev_factor_detector(
+    *,
+    client=None,
+    model: str | None = None,
+    threshold: float | None = None,
+):
+    """Return a detector that asks Jev instead of matching substrings.
+
+    The returned callable has the same signature as
+    :func:`_detect_text_factors` — ``(target, deal) -> (factors, confidence)``
+    — so :func:`score_merger` is indifferent to which one it holds.
+
+    All five questions travel in one request. Probabilities are thresholded to
+    booleans so the existing weighting is untouched; the raw values come back
+    alongside for the evidence trail.
+
+    A transient service error falls back to the keyword detector rather than
+    failing the run: a degraded Jev should cost accuracy, not availability.
+    A rejected credential is re-raised, because it will reject every
+    subsequent deal too and a silent fallback would hide the misconfiguration.
+    """
+    from cam import jev
+
+    resolved_threshold = threshold if threshold is not None else _default_threshold()
+    resolved_client = client if client is not None else jev.default_client(model=model)
+
+    def detect(target_description: str, deal_description: str) -> tuple[set[str], dict[str, float]]:
+        state = {
+            "target_description": target_description,
+            "deal_description": deal_description,
+        }
+        try:
+            response = jev.ask(state, build_factor_questions(), client=resolved_client, model=model)
+        except jev.FATAL_ERRORS:
+            logger.error(
+                "Jev rejected our credential while screening a merger; check "
+                "TYPESAFE_API_KEY. Failing rather than silently downgrading to keywords."
+            )
+            raise
+        except jev.TRANSIENT_ERRORS as exc:
+            logger.warning("Jev unavailable for merger screening (%s); using keywords.", exc)
+            return keyword_detector(target_description, deal_description)
+
+        confidence = {f: float(response.nouls[f].noul) for f in _FACTOR_QUESTIONS}
+        detected = {f for f, p in confidence.items() if p >= resolved_threshold}
+
+        # The numeric HHI threshold is arithmetic, not judgment: an explicit
+        # value above 2,500 triggers the factor regardless of what the model
+        # made of the prose.
+        if _detect_high_hhi(f"{target_description} {deal_description}"):
+            detected.add("high_hhi_either_market")
+
+        return detected, confidence
+
+    return detect
+
+
+def _default_threshold() -> float:
+    """Probability at or above which a factor counts as present."""
+    try:
+        from cam.config import get_settings
+
+        return get_settings().merger_factor_threshold
+    except Exception:  # pragma: no cover — no settings in config-free tests
+        return 0.5
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -327,6 +543,7 @@ def score_merger(
     deal_description: str,
     *,
     prior_merger_lookup: Callable[[UUID], int] | None = None,
+    detector: Callable[[str, str], tuple[set[str], dict[str, float]]] | None = None,
 ) -> MergerRiskScore:
     """Score a proposed merger transaction for vertical integration risk.
 
@@ -340,6 +557,9 @@ def score_merger(
             count of prior vertical acquisitions recorded in the database for the
             acquirer entity.  Pass a lambda in tests to avoid DB dependencies.
             Defaults to zero (no history) when omitted.
+        detector: Optional callable ``(target, deal) -> (factors, confidence)``.
+            Defaults to substring matching, or to :func:`jev_factor_detector`
+            when ``ANALYSIS_JEV_ENABLED`` is set. Inject a stub in tests.
 
     Returns:
         :class:`MergerRiskScore` with:
@@ -349,10 +569,11 @@ def score_merger(
         - ``comparable_past_cases``: citations of similar reviewed mergers
         - ``recommended_review_focus``: plain-language memo flag for reviewers
     """
-    combined = f"{target_description} {deal_description}"
-
-    # Text-based factor detection
-    detected: set[str] = _detect_text_factors(combined)
+    # Text-based factor detection. The detector is a seam, not a branch:
+    # keyword matching by default, Jev when configured, a stub in tests.
+    resolved_detector = detector if detector is not None else _default_detector()
+    detected, confidence = resolved_detector(target_description, deal_description)
+    detected = set(detected)
 
     # Prior-merger history (injectable; defaults to no history)
     prior_count: int = 0
@@ -394,4 +615,14 @@ def score_merger(
         market_overlap_description=_generate_overlap_description(factors),
         comparable_past_cases=_collect_comparable_cases(factors),
         recommended_review_focus=_generate_review_focus(factors),
+        factor_confidence=dict(confidence),
     )
+
+
+def _default_detector() -> Callable[[str, str], tuple[set[str], dict[str, float]]]:
+    """Return the configured detector: Jev when enabled, keywords otherwise."""
+    from cam import jev
+
+    if not jev.enabled("analysis_jev_enabled"):
+        return keyword_detector
+    return jev_factor_detector()

@@ -170,6 +170,26 @@ class Settings(BaseSettings):
         ),
     )
 
+    # TypeSafe / Jev — analysis screening (M9 proxy topics, M10 merger factors)
+    analysis_jev_enabled: bool = Field(
+        default=False,
+        description=(
+            "Opt in to Jev for proxy proposal topics and merger risk factors, "
+            "replacing the substring keyword tables. Off by default: it needs "
+            "a credential and bills per token, and both modules must keep "
+            "working without it."
+        ),
+    )
+    merger_factor_threshold: float = Field(
+        default=0.5,
+        description=(
+            "Noul probability at or above which a vertical risk factor counts "
+            "as present. 0.5 keeps the weighting identical to the boolean "
+            "keyword detector it replaces; raise it to demand more certainty "
+            "before a factor contributes weight."
+        ),
+    )
+
     # Output
     # Optional here so workers/Celery can start without an API credential.
     # The API layer must assert this is set before accepting requests.
