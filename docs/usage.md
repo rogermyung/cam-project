@@ -11,12 +11,13 @@ This guide explains how to run the CAM pipeline, score entities, and interpret a
 3. [Running with Docker](#3-running-with-docker)
 4. [Scheduled Automation (GitHub Actions)](#4-scheduled-automation-github-actions)
 5. [Interpreting Alert Levels](#5-interpreting-alert-levels)
-6. [Flagging PE-Owned Entities](#6-flagging-pe-owned-entities)
-7. [Industry Benchmarking (PE vs. Non-PE)](#7-industry-benchmarking-pe-vs-non-pe)
-8. [Generating Alerts for a Single Entity](#8-generating-alerts-for-a-single-entity)
-9. [Environment Setup](#9-environment-setup)
-10. [Database Requirements](#10-database-requirements)
-11. [Running Tests](#11-running-tests)
+6. [Entity Resolution and Jev Alignment](#6-entity-resolution-and-jev-alignment)
+7. [Flagging PE-Owned Entities](#7-flagging-pe-owned-entities)
+8. [Industry Benchmarking (PE vs. Non-PE)](#8-industry-benchmarking-pe-vs-non-pe)
+9. [Generating Alerts for a Single Entity](#9-generating-alerts-for-a-single-entity)
+10. [Environment Setup](#10-environment-setup)
+11. [Database Requirements](#11-database-requirements)
+12. [Running Tests](#12-running-tests)
 
 ---
 
@@ -273,7 +274,98 @@ Missing components default to **0.0** — the scorer degrades gracefully if a mo
 
 ---
 
-## 6. Flagging PE-Owned Entities
+## 6. Entity Resolution and Jev Alignment
+
+Every event an ingestion module writes has to be attached to a canonical
+entity. The resolver (`cam/entity/resolver.py`) works through five steps and
+stops at the first hit:
+
+| Step | Mechanism | Outcome |
+|------|-----------|---------|
+| 1 | Exact `(raw_name, source)` alias hit | `method='exact'`, confidence 1.0 |
+| 2 | Normalised exact match over all aliases **and** every `Entity.canonical_name` | `method='exact'`, confidence 1.0 |
+| 3 | rapidfuzz `token_sort_ratio` over the same pool | `method='fuzzy'` above `ENTITY_FUZZY_THRESHOLD`; review queue above `ENTITY_REVIEW_THRESHOLD` |
+| 4 | External lookup (Jev alignment, opt-in) | `method='api'` on a merge verdict; review queue on a review verdict |
+| 5 | Unresolved | event keeps `entity_id=NULL` |
+
+Steps 1–3 cost nothing and run always. Step 4 runs only when
+`ENTITY_JEV_ENABLED=true`.
+
+### Why step 4 exists
+
+Steps 1–3 compare strings. They cannot link `SAFEWAY STORES 4680` to
+`Albertsons Companies, Inc.` — the names share no tokens, so no
+`token_sort_ratio` threshold will ever connect them. This is the main reason
+WARN, OSHA, EPA and CFPB events resolve to nothing while EDGAR events resolve
+fine: EDGAR filers *are* the SEC-seeded entities, and regulatory filers
+usually are not.
+
+`cam/entity/jev_align.py` keeps rapidfuzz as a cheap candidate generator and
+asks [TypeSafe's Jev](https://docs.typesafe.ai/) to adjudicate the shortlist.
+Per candidate it asks a three-level score — different company / related or
+unclear / the same company — plus two corroborating yes-no questions, all in
+one batched request. The rounded level *is* the decision:
+
+| Level | Verdict | Effect |
+|-------|---------|--------|
+| 2 | merge | event links to the entity; an alias is written so the next hit is free |
+| 1 | review | entity review queue, for a human to accept or reject |
+| 0 | reject | event stays unlinked |
+
+A wholly owned subsidiary, brand, division or single facility counts as **the
+same company**, so a violation at `Tyson Fresh Meats` is attributed to
+`Tyson Foods, Inc.`
+
+### Enabling it
+
+```bash
+ENTITY_JEV_ENABLED=true
+TYPESAFE_API_KEY=...            # from https://console.typesafe.ai/
+ENTITY_JEV_CANDIDATE_LIMIT=5    # candidates per raw name; 3 questions each
+```
+
+No code changes are needed — `bulk_resolve()` picks the lookup up from
+settings, so every ingestion module gets it at once. With the flag off, or the
+service unreachable, resolution behaves exactly as it did before: a transient
+TypeSafe error is logged and the name falls through to step 5 rather than
+failing the ingest.
+
+A **rejected credential is the exception and fails the run.** A bad
+`TYPESAFE_API_KEY` rejects every name in the batch, so degrading quietly would
+report it as "Jev found no matches" — indistinguishable from a healthy
+pipeline that resolved nothing. Given how often this project's real bug has
+been a silently empty run, a 401 is made loud on purpose.
+
+Work the review queue with the existing CLI:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m cam.entity.cli list
+```
+
+### Checking its judgment
+
+Typed output guarantees the shape of the answer, not its correctness. The
+model's accuracy is measured against a hand-labelled gold set
+(`tests/fixtures/entity/alignment_gold.json`), which is excluded from the
+default test run:
+
+```bash
+export TYPESAFE_API_KEY="$YOUR_REAL_KEY"   # not a placeholder; a bad key 401s
+PYTHONPATH=. .venv/bin/python -m pytest tests/smoke/test_jev_align.py -m live -v -s
+```
+
+That prints a per-case table and enforces two floors: 80% verdict accuracy,
+and **zero** merges onto the wrong entity. Extend the gold set rather than
+loosening the floors — a wrong merge attributes one company's violations to
+another, which is the one error this system cannot absorb.
+
+The gate is "is the variable non-empty", not "is the key valid", so an
+invalid key fails the run rather than skipping it. That is deliberate: a
+silently skipped quality check is worth nothing.
+
+---
+
+## 7. Flagging PE-Owned Entities
 
 CAM tracks private equity ownership through the `Signal` table. Use `flag_pe_entity_for_monitoring` to mark an entity as PE-owned:
 
@@ -299,7 +391,7 @@ Once flagged, the entity's `pe_warn_flag` component (5% weight) activates in the
 
 ---
 
-## 7. Industry Benchmarking (PE vs. Non-PE)
+## 8. Industry Benchmarking (PE vs. Non-PE)
 
 The M12 PE/Bankruptcy Correlator can generate a citable comparison table across all NAICS sectors.
 
@@ -326,7 +418,7 @@ Only sectors with **more than 10 PE-owned entities** are included, per the stati
 
 ---
 
-## 8. Generating Alerts for a Single Entity
+## 9. Generating Alerts for a Single Entity
 
 ```python
 from datetime import date
@@ -351,7 +443,7 @@ with get_session() as db:
 
 ---
 
-## 9. Environment Setup
+## 10. Environment Setup
 
 Copy `.env.example` to `.env` and fill in the required values:
 
@@ -375,7 +467,7 @@ All variables can be set in `.env` or as real environment variables. Environment
 
 ---
 
-## 10. Database Requirements
+## 11. Database Requirements
 
 CAM uses PostgreSQL for all structured data. Redis is required only for the Celery task queue.
 
@@ -424,7 +516,7 @@ For high-concurrency deployments, set `pool_size` and `max_overflow` in `cam/db/
 
 ---
 
-## 11. Running Tests
+## 12. Running Tests
 
 ```bash
 # All unit tests (no DB needed)

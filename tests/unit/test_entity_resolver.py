@@ -190,6 +190,99 @@ class TestExactMatch:
 
 
 # ---------------------------------------------------------------------------
+# Entity.canonical_name as a matchable name
+# ---------------------------------------------------------------------------
+
+
+class TestCanonicalNameMatching:
+    """An entity must be resolvable by its own name, with no alias row.
+
+    Before this, resolve() and bulk_resolve() only ever queried
+    entity_aliases.  A freshly seeded entity whose alias row was missing — or
+    any entity created by an external lookup or by hand — was invisible: even a
+    raw name identical to Entity.canonical_name came back
+    method='unresolved', confidence=0.00.  That is the mechanism behind
+    regulatory events landing with entity_id=NULL and an empty dashboard.
+    """
+
+    def test_exact_canonical_name_resolves_without_an_alias(self, db):
+        entity = _make_entity(db, "Tyson Foods, Inc.", ticker="TSN")
+        assert db.query(EntityAlias).count() == 0
+
+        result = resolve("Tyson Foods, Inc.", "warn", db)
+
+        assert result.resolved
+        assert result.entity_id == entity.id
+        assert result.confidence == 1.0
+        assert result.method == "exact"
+
+    @pytest.mark.parametrize(
+        "raw",
+        ["TYSON FOODS INC", "tyson foods inc.", "Tyson Foods", "Tyson  Foods,  Inc"],
+    )
+    def test_normalised_canonical_variants_resolve(self, db, raw):
+        entity = _make_entity(db, "Tyson Foods, Inc.")
+        result = resolve(raw, "osha", db)
+        assert result.resolved
+        assert result.entity_id == entity.id
+
+    def test_canonical_match_caches_an_alias(self, db):
+        """The second hit should take the indexed fast path."""
+        _make_entity(db, "Tyson Foods, Inc.")
+        resolve("TYSON FOODS INC", "warn", db)
+
+        cached = (
+            db.query(EntityAlias)
+            .filter(EntityAlias.raw_name == "TYSON FOODS INC", EntityAlias.source == "warn")
+            .one()
+        )
+        assert cached.confidence == 1.0
+
+    def test_fuzzy_match_against_canonical_name(self, db):
+        entity = _make_entity(db, "Kroger Company")
+        result = resolve("Kroger Co.", "warn", db, fuzzy_threshold=0.80)
+        assert result.resolved
+        assert result.entity_id == entity.id
+
+    def test_bulk_resolve_matches_canonical_names(self, db):
+        entity = _make_entity(db, "Albertsons Companies, Inc.")
+        results = bulk_resolve(
+            [{"name": "ALBERTSONS COMPANIES INC"}, {"name": "Nothing Like It At All"}],
+            "warn",
+            db,
+            commit=False,
+        )
+        assert results[0].resolved
+        assert results[0].entity_id == entity.id
+        assert not results[1].resolved
+
+    def test_alias_wins_over_canonical_name_on_a_tie(self, db):
+        """Source preference must still decide, so pre-existing links are stable."""
+        aliased = _make_entity(db, "Different Legal Name Holdings")
+        _seed_alias(db, aliased.id, "Acme Supply", source="warn")
+        canonical_only = _make_entity(db, "Acme Supply")
+
+        result = resolve("Acme Supply", "warn", db)
+
+        assert result.entity_id == aliased.id, (
+            "a same-source alias must outrank a canonical name that matches equally well"
+        )
+        assert result.entity_id != canonical_only.id
+
+    def test_review_queue_names_the_canonical_candidate(self, db):
+        """A near miss on a canonical name must reach review, not vanish."""
+        _make_entity(db, "Sunrise Energy Partners")
+
+        result = resolve(
+            "Sunrise Energic Partnership", "warn", db, fuzzy_threshold=0.95, review_threshold=0.60
+        )
+
+        assert result.needs_review
+        queued = get_review_queue()
+        assert queued[0].best_match_name == "Sunrise Energy Partners"
+
+
+# ---------------------------------------------------------------------------
 # CVS family — the canonical acceptance test
 # ---------------------------------------------------------------------------
 

@@ -3,9 +3,12 @@ Entity resolution: map raw company name strings to canonical entity IDs.
 
 Resolution pipeline (in order):
 1. Exact match against entity_aliases table
-2. Fuzzy match using token-based similarity (rapidfuzz) against all known aliases
-3. External lookup via OpenCorporates / SEC EDGAR company search
-4. Manual review queue for low-confidence matches
+2. Normalised exact match against all alias rows *and* every
+   Entity.canonical_name
+3. Fuzzy match using token-based similarity (rapidfuzz) over the same pool
+4. External lookup via OpenCorporates / SEC EDGAR company search
+   (see cam.entity.jev_align for the Jev-backed implementation)
+5. Manual review queue for low-confidence matches
 
 All thresholds are configurable via environment variables.
 """
@@ -38,6 +41,12 @@ class ResolveResult:
     method: str  # 'exact', 'fuzzy', 'api', 'unresolved'
     needs_review: bool
     raw_name: str = ""
+    # The entity a needs_review result was *nearly* matched to.  Kept separate
+    # from entity_id because entity_id being set means "link the event to this",
+    # which is exactly what a review item must not do.  Carrying the candidate
+    # anyway lets the review queue record it, so `cam.entity.cli accept` has a
+    # UUID to work with instead of a name the reviewer must look up by hand.
+    review_entity_id: uuid.UUID | None = None
 
     @property
     def resolved(self) -> bool:
@@ -175,6 +184,73 @@ def _normalize(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Resolution candidates
+# ---------------------------------------------------------------------------
+
+# Sentinel source for a candidate taken from Entity.canonical_name rather than
+# from an entity_aliases row.  It can never equal a real data source, so the
+# same-source tie-break in _pick_preferred() always prefers a genuine alias
+# over a canonical name when both match equally well — preserving the
+# behaviour that existed before canonical names joined the pool.
+CANONICAL_SOURCE = "__canonical__"
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """One name a raw string can be matched against.
+
+    Candidates come from two places: rows in ``entity_aliases``, and each
+    entity's own ``canonical_name``.  Including the canonical name matters —
+    without it an entity is invisible to the resolver until some alias row
+    happens to be written for it, so a raw name that exactly equalled an
+    existing ``Entity.canonical_name`` resolved at confidence 0.00.
+    """
+
+    entity_id: uuid.UUID
+    name: str
+    source: str
+    normalised: str
+
+
+def _load_candidates(db: Session) -> list[_Candidate]:
+    """Load every matchable name: alias rows first, then canonical names.
+
+    Aliases come first so that a tie on match score resolves to an alias.
+    Two column-only queries, no ORM hydration — cheaper than the two full
+    ``db.query(EntityAlias).all()`` scans this replaced.
+    """
+    candidates: list[_Candidate] = [
+        _Candidate(
+            entity_id=row.entity_id,
+            name=row.raw_name,
+            source=row.source,
+            normalised=_normalize(row.raw_name),
+        )
+        for row in db.query(EntityAlias.raw_name, EntityAlias.entity_id, EntityAlias.source).all()
+    ]
+    candidates.extend(
+        _Candidate(
+            entity_id=row.id,
+            name=row.canonical_name,
+            source=CANONICAL_SOURCE,
+            normalised=_normalize(row.canonical_name),
+        )
+        for row in db.query(Entity.id, Entity.canonical_name).all()
+    )
+    return candidates
+
+
+def _pick_preferred(candidates: list[_Candidate], source: str) -> _Candidate:
+    """Return the same-source candidate if there is one, else the first.
+
+    The (raw_name, source) unique constraint lets one normalised form map to
+    two different entities under two different sources, so preferring the
+    caller's own source is a correctness requirement, not a nicety.
+    """
+    return next((c for c in candidates if c.source == source), candidates[0])
+
+
+# ---------------------------------------------------------------------------
 # Core resolver
 # ---------------------------------------------------------------------------
 
@@ -200,14 +276,17 @@ def resolve(
     fuzzy_threshold:     Accept fuzzy match above this score automatically.
     review_threshold:    Queue for manual review above this score.
     external_lookup_fn:  Callable(raw_name, hint) -> ResolveResult | None.
-                         Injected for testing; defaults to SEC EDGAR lookup.
+                         A resolved result is accepted as method='api'; an
+                         unresolved result with needs_review=True is queued
+                         for manual review.  See
+                         cam.entity.jev_align.make_external_lookup().
 
     Returns
     -------
     ResolveResult
     """
     # ------------------------------------------------------------------
-    # Step 1: exact match (normalised string)
+    # Step 1: exact (raw_name, source) alias hit — the indexed fast path
     # ------------------------------------------------------------------
     normalised = _normalize(raw_name)
     alias = (
@@ -227,11 +306,20 @@ def resolve(
             raw_name=raw_name,
         )
 
-    # Also check normalised form against all aliases — pass source so we
-    # prefer same-source aliases when multiple sources share a normalised name.
-    normalised_alias = _exact_normalised_match(normalised, source, db)
-    if normalised_alias:
-        entity = db.get(Entity, normalised_alias.entity_id)
+    # ------------------------------------------------------------------
+    # Step 2: normalised exact match over aliases *and* canonical names
+    # ------------------------------------------------------------------
+    # Load every matchable name once: alias rows plus entity canonical names.
+    # Shared with the fuzzy step below, so steps 2 and 3 cost one scan between
+    # them rather than one each.
+    candidates = _load_candidates(db)
+
+    # Normalised exact match over that pool — pass source so we prefer
+    # same-source aliases when several candidates share a normalised name.
+    normalised_matches = [c for c in candidates if c.normalised == normalised]
+    if normalised_matches:
+        chosen = _pick_preferred(normalised_matches, source)
+        entity = db.get(Entity, chosen.entity_id)
         # Persist alias for fast future lookups
         add_alias(entity.id, raw_name, source, 1.0, db)
         return ResolveResult(
@@ -244,43 +332,32 @@ def resolve(
         )
 
     # ------------------------------------------------------------------
-    # Step 2: fuzzy match against all known aliases
+    # Step 3: fuzzy match over the same candidate pool
     #
-    # Fetch source alongside raw_name so we can prefer same-source aliases
-    # when multiple aliases score equally — mirroring bulk_resolve behaviour.
+    # Candidates carry their source so we can prefer same-source matches when
+    # several score equally — mirroring bulk_resolve behaviour.
     # ------------------------------------------------------------------
-    all_aliases = db.query(EntityAlias.raw_name, EntityAlias.entity_id, EntityAlias.source).all()
-    if all_aliases:
-        alias_names = [a.raw_name for a in all_aliases]
-        alias_entity_ids = [a.entity_id for a in all_aliases]
-        alias_sources = [a.source for a in all_aliases]
-        alias_normalised = [_normalize(n) for n in alias_names]
-
+    if candidates:
         # Extract all matches at the best score so we can apply source preference.
         top_results = process.extract(
             normalised,
-            alias_normalised,
+            [c.normalised for c in candidates],
             scorer=fuzz.token_sort_ratio,
             score_cutoff=0,
             limit=None,
         )
         if top_results:
             best_score_raw = top_results[0][1]
-            # Collect all candidates tied at the best score
-            top_candidates = [r for r in top_results if r[1] == best_score_raw]
-            # Prefer same-source candidate; fall back to first (highest-score) match
-            chosen = next(
-                (r for r in top_candidates if alias_sources[r[2]] == source),
-                top_results[0],
-            )
-            _, score_raw, idx = chosen
-            score = score_raw / 100.0  # rapidfuzz returns 0-100
+            # Collect all candidates tied at the best score. process.extract()
+            # returns them highest-first, so tied[0] is top_results[0].
+            tied = [candidates[r[2]] for r in top_results if r[1] == best_score_raw]
+            chosen = _pick_preferred(tied, source)
+            score = best_score_raw / 100.0  # rapidfuzz returns 0-100
 
             if score >= fuzzy_threshold:
-                entity_id = alias_entity_ids[idx]
-                entity = db.get(Entity, entity_id)
+                entity = db.get(Entity, chosen.entity_id)
                 # Cache alias to speed up future exact lookups
-                add_alias(entity_id, raw_name, source, score, db)
+                add_alias(chosen.entity_id, raw_name, source, score, db)
                 return ResolveResult(
                     entity_id=entity.id,
                     canonical_name=entity.canonical_name,
@@ -295,8 +372,8 @@ def resolve(
                     raw_name,
                     source,
                     score,
-                    alias_names[idx],
-                    alias_entity_ids[idx],
+                    chosen.name,
+                    chosen.entity_id,
                     db,
                 )
                 return ResolveResult(
@@ -309,7 +386,7 @@ def resolve(
                 )
 
     # ------------------------------------------------------------------
-    # Step 3: external lookup (SEC EDGAR / OpenCorporates)
+    # Step 4: external lookup (SEC EDGAR / OpenCorporates / Jev)
     # ------------------------------------------------------------------
     if external_lookup_fn is not None:
         ext_result = external_lookup_fn(raw_name, hint or {})
@@ -323,9 +400,31 @@ def resolve(
                 needs_review=False,
                 raw_name=raw_name,
             )
+        # An unresolved-but-uncertain verdict must reach the review queue, the
+        # same way the fuzzy step queues its middle band.  Without this an
+        # external lookup that said "possibly the same company" would fall
+        # through to step 5 and be recorded as a flat confidence-0.0 miss.
+        if ext_result is not None and ext_result.needs_review:
+            _queue_for_review(
+                raw_name,
+                source,
+                ext_result.confidence,
+                ext_result.canonical_name,
+                ext_result.review_entity_id,
+                db,
+            )
+            return ResolveResult(
+                entity_id=None,
+                canonical_name=ext_result.canonical_name,
+                confidence=ext_result.confidence,
+                method="unresolved",
+                needs_review=True,
+                raw_name=raw_name,
+                review_entity_id=ext_result.review_entity_id,
+            )
 
     # ------------------------------------------------------------------
-    # Step 4: unresolved
+    # Step 5: unresolved
     # ------------------------------------------------------------------
     logger.warning("Could not resolve entity for raw_name=%r source=%s", raw_name, source)
     return ResolveResult(
@@ -336,24 +435,6 @@ def resolve(
         needs_review=False,
         raw_name=raw_name,
     )
-
-
-def _exact_normalised_match(normalised: str, source: str, db: Session) -> EntityAlias | None:
-    """
-    Return the best alias whose raw_name normalises to `normalised`.
-
-    Prefers an alias from the same `source` — mirroring bulk_resolve behaviour
-    and respecting the (raw_name, source) unique constraint which allows the same
-    raw_name to point to *different* entities under different sources.  Falls back
-    to the first match when no same-source alias exists.
-    """
-    all_aliases = db.query(EntityAlias).all()
-    candidates = [a for a in all_aliases if _normalize(a.raw_name) == normalised]
-    if not candidates:
-        return None
-    # Prefer same-source alias; fall back to the first candidate
-    same_source = next((a for a in candidates if a.source == source), None)
-    return same_source or candidates[0]
 
 
 def _queue_for_review(
@@ -401,6 +482,38 @@ def _queue_for_review(
 
 
 # ---------------------------------------------------------------------------
+# External lookup wiring
+# ---------------------------------------------------------------------------
+
+
+def default_external_lookup_fn(db: Session, source: str = ""):
+    """Return the configured external lookup step, or None when disabled.
+
+    Jev-backed alignment (``cam.entity.jev_align``) is the only external lookup
+    implemented, and it is opt-in via ``entity_jev_enabled`` because it needs a
+    credential and bills per token.  When it is off — the default — the
+    resolver stops at the fuzzy step exactly as it always has.
+
+    Imported lazily: jev_align imports this module, and settings may be absent
+    in unit tests that only exercise the string-matching path.
+    """
+    try:
+        from cam.config import get_settings
+
+        settings = get_settings()
+        enabled = settings.entity_jev_enabled
+    except Exception:  # pragma: no cover — no settings in string-only tests
+        return None
+
+    if not enabled:
+        return None
+
+    from cam.entity.jev_align import make_external_lookup
+
+    return make_external_lookup(db, source)
+
+
+# ---------------------------------------------------------------------------
 # Bulk resolution
 # ---------------------------------------------------------------------------
 
@@ -429,21 +542,31 @@ def bulk_resolve(
                 review-queue Signal rows are visible to other processes.  Pass
                 False when the caller owns the transaction boundary (e.g.
                 ingest_from_csv commits once after inserting events).
-    **kwargs:   Passed through to resolve().
+    **kwargs:   Passed through to resolve().  When ``external_lookup_fn`` is
+                absent, the configured default is used (Jev alignment if
+                ``entity_jev_enabled``, otherwise no external step); pass
+                ``external_lookup_fn=None`` explicitly to suppress it.
     """
-    # Pre-load the full alias table once.
+    # Resolve the external lookup once per batch, not once per record: the
+    # factory builds an API client and this loop may run thousands of times.
+    if "external_lookup_fn" not in kwargs:
+        kwargs["external_lookup_fn"] = default_external_lookup_fn(db, source)
+    # Pre-load every matchable name once: alias rows plus canonical names.
+    candidates = _load_candidates(db)
+
     # Exact map keyed by (raw_name, source) — mirrors the DB unique constraint
     # so we never silently pick the wrong entity when the same raw_name appears
-    # under multiple sources.
-    all_aliases_rows = db.query(EntityAlias).all()
-    alias_map: dict[tuple[str, str], EntityAlias] = {
-        (a.raw_name, a.source): a for a in all_aliases_rows
+    # under multiple sources.  Canonical-name candidates are deliberately
+    # excluded: their sentinel source can never equal a caller's source, so
+    # they belong in the normalised map only.
+    alias_map: dict[tuple[str, str], _Candidate] = {
+        (c.name, c.source): c for c in candidates if c.source != CANONICAL_SOURCE
     }
 
-    # Normalized map: norm → list of aliases; we prefer same-source matches.
-    alias_norm_map: dict[str, list[EntityAlias]] = {}
-    for a in all_aliases_rows:
-        alias_norm_map.setdefault(_normalize(a.raw_name), []).append(a)
+    # Normalized map: norm → list of candidates; we prefer same-source matches.
+    alias_norm_map: dict[str, list[_Candidate]] = {}
+    for c in candidates:
+        alias_norm_map.setdefault(c.normalised, []).append(c)
 
     results: list[ResolveResult] = []
     for record in records:
@@ -466,11 +589,10 @@ def bulk_resolve(
             )
             continue
 
-        # Normalised exact-match — prefer same-source, fall back to first alias
+        # Normalised exact-match — prefer same-source, fall back to first candidate
         norm = _normalize(raw_name)
         if norm in alias_norm_map:
-            candidates = alias_norm_map[norm]
-            alias = next((a for a in candidates if a.source == source), candidates[0])
+            alias = _pick_preferred(alias_norm_map[norm], source)
             entity = db.get(Entity, alias.entity_id)
             add_alias(entity.id, raw_name, source, 1.0, db)
             results.append(
