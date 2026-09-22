@@ -12,12 +12,13 @@ This guide explains how to run the CAM pipeline, score entities, and interpret a
 4. [Scheduled Automation (GitHub Actions)](#4-scheduled-automation-github-actions)
 5. [Interpreting Alert Levels](#5-interpreting-alert-levels)
 6. [Entity Resolution and Jev Alignment](#6-entity-resolution-and-jev-alignment)
-7. [Flagging PE-Owned Entities](#7-flagging-pe-owned-entities)
-8. [Industry Benchmarking (PE vs. Non-PE)](#8-industry-benchmarking-pe-vs-non-pe)
-9. [Generating Alerts for a Single Entity](#9-generating-alerts-for-a-single-entity)
-10. [Environment Setup](#10-environment-setup)
-11. [Database Requirements](#11-database-requirements)
-12. [Running Tests](#12-running-tests)
+7. [Screening Judgments (Proxy Topics, Merger Factors)](#7-screening-judgments-proxy-topics-merger-factors)
+8. [Flagging PE-Owned Entities](#8-flagging-pe-owned-entities)
+9. [Industry Benchmarking (PE vs. Non-PE)](#9-industry-benchmarking-pe-vs-non-pe)
+10. [Generating Alerts for a Single Entity](#10-generating-alerts-for-a-single-entity)
+11. [Environment Setup](#11-environment-setup)
+12. [Database Requirements](#12-database-requirements)
+13. [Running Tests](#13-running-tests)
 
 ---
 
@@ -365,7 +366,82 @@ silently skipped quality check is worth nothing.
 
 ---
 
-## 7. Flagging PE-Owned Entities
+## 7. Screening Judgments (Proxy Topics, Merger Factors)
+
+Two analysis modules classify free text with substring tables, and both have a
+Jev-backed alternative behind the same seam.
+
+| Module | Judgment | Default | With Jev |
+|--------|----------|---------|----------|
+| M9 `proxy_parser` | Which of 7 topics a shareholder proposal is about | first matching keyword list wins | one `Choice` per proposal, batched per filing |
+| M10 `merger_screener` | Which of 5 vertical risk factors a deal exhibits | substring match per factor | one `Noul` per factor, one request |
+
+### Why
+
+Substring matching has three failure modes the gold set
+(`tests/fixtures/analysis/screening_gold.json`) reproduces, with measured
+keyword accuracy of **60%** on topics and **62%** on factors:
+
+- **Negation.** "The acquirer does not operate a marketplace and has no
+  insurance business" triggers both `platform_plus_seller` and
+  `payer_plus_provider`, scoring 3.0 of 9.0 on a deal that explicitly denies
+  the theory.
+- **Bare-word coincidence.** A deal funded by "a life insurance policy held on
+  its founder" scores 1.5 of 9.0 on `payer_plus_provider`.
+- **Order dependence.** `classify_proposal_topic` returns the first keyword
+  list that matches, so a warehouse-safety proposal mentioning "audit
+  findings" is filed under `supply_chain`, not `worker_welfare`. The comment
+  above `_TOPIC_KEYWORDS` exists to manage exactly this.
+
+### What stays in code
+
+Only the judgments move. Vote percentages, dollar amounts, the management
+recommendation, `flag_escalating_minority`, the factor weights, the score
+normalisation, the precedent citations, the review-focus text — all unchanged.
+
+The **HHI > 2500 test is arithmetic and stays in code**, and the model is told
+not to estimate it. An explicit numeric HHI above the threshold triggers
+`high_hhi_either_market` regardless of what the model made of the prose.
+
+### Enabling it
+
+```bash
+ANALYSIS_JEV_ENABLED=true
+TYPESAFE_API_KEY=...            # shared with entity alignment
+MERGER_FACTOR_THRESHOLD=0.5     # 0.5 keeps weighting identical to the boolean detector
+```
+
+Both modules degrade on a transient TypeSafe error by **falling back to their
+keyword implementation** — a degraded Jev costs accuracy, not availability. A
+rejected credential is re-raised, for the same reason as in §6: it rejects
+every subsequent call, and a quiet fallback would hide the misconfiguration.
+
+`MergerRiskScore.factor_confidence` carries the raw per-factor probabilities.
+`score` is still computed from the thresholded factor set, so enabling Jev
+changes which factors fire but not how they are weighted. The probabilities
+are stored so a probability-weighted composite can be evaluated later against
+recorded judgments, without re-running inference.
+
+### Checking its judgment
+
+The live check measures Jev **against the keyword baseline on the same cases
+in the same run**, and fails if Jev does not beat it — an absolute accuracy
+figure would not tell you whether the swap was worth paying for:
+
+```bash
+export TYPESAFE_API_KEY="$YOUR_REAL_KEY"
+PYTHONPATH=. .venv/bin/python -m pytest tests/smoke/test_jev_screening.py -m live -v -s --no-cov
+```
+
+The keyword baseline itself is measured offline, with no key and no network:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/unit/test_jev_screening.py -k Baseline -v --no-cov
+```
+
+---
+
+## 8. Flagging PE-Owned Entities
 
 CAM tracks private equity ownership through the `Signal` table. Use `flag_pe_entity_for_monitoring` to mark an entity as PE-owned:
 
@@ -391,7 +467,7 @@ Once flagged, the entity's `pe_warn_flag` component (5% weight) activates in the
 
 ---
 
-## 8. Industry Benchmarking (PE vs. Non-PE)
+## 9. Industry Benchmarking (PE vs. Non-PE)
 
 The M12 PE/Bankruptcy Correlator can generate a citable comparison table across all NAICS sectors.
 
@@ -420,7 +496,7 @@ Only sectors with **more than 10 PE-owned entities** are included, per the stati
 
 ---
 
-## 9. Generating Alerts for a Single Entity
+## 10. Generating Alerts for a Single Entity
 
 ```python
 from datetime import date
@@ -445,7 +521,7 @@ with get_session() as db:
 
 ---
 
-## 10. Environment Setup
+## 11. Environment Setup
 
 Copy `.env.example` to `.env` and fill in the required values:
 
@@ -469,7 +545,7 @@ All variables can be set in `.env` or as real environment variables. Environment
 
 ---
 
-## 11. Database Requirements
+## 12. Database Requirements
 
 CAM uses PostgreSQL for all structured data. Redis is required only for the Celery task queue.
 
@@ -518,7 +594,7 @@ For high-concurrency deployments, set `pool_size` and `max_overflow` in `cam/db/
 
 ---
 
-## 12. Running Tests
+## 13. Running Tests
 
 ```bash
 # All unit tests (no DB needed)

@@ -3,13 +3,31 @@ Proxy Statement Parser (M9).
 
 Parses DEF 14A proxy filings to extract say-on-pay vote results, shareholder
 proposals, executive compensation data, and escalating minority vote signals.
+
+Topic classification has two implementations behind one seam. The default
+walks :data:`_TOPIC_KEYWORDS` and takes the first list containing a matching
+substring, which makes the result depend on the order of that list: a
+supply-chain proposal mentioning "labor" would be filed under
+``worker_welfare`` if the lists were reordered, and the comment on that table
+exists to manage exactly this hazard. :func:`jev_topic_classifier` asks Jev a
+single Choice over all seven topics instead, weighing the whole proposal
+rather than racing keyword lists, and falls back to keywords if the service
+is unavailable.
+
+Every other field — vote percentages, dollar amounts, the management
+recommendation, :func:`flag_escalating_minority` — stays regex and
+arithmetic, because none of it needs semantic understanding.
 """
 
 from __future__ import annotations
 
+import logging
 import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Proposal topic classification
@@ -199,18 +217,149 @@ def _parse_dollar(text: str) -> float | None:
 # ---------------------------------------------------------------------------
 
 
-def classify_proposal_topic(proposal_text: str) -> str:
-    """Classify a shareholder proposal into a topic category.
+# What each topic means, for the Choice. Written as what the proposal *asks
+# the company to do*, since that is what distinguishes the overlapping cases:
+# a proposal on supplier labour practices and one on the company's own
+# workforce both talk about "labor", and only the target separates them.
+_TOPIC_CRITERIA: dict[str, dict[str, object]] = {
+    "supply_chain": {
+        "what": (
+            "Conditions in the company's supply chain: supplier labour "
+            "practices, forced or child labour, human-rights due diligence, "
+            "supplier audits, ILO standards."
+        ),
+        "not_for": "Conditions affecting the company's own direct employees.",
+    },
+    "worker_welfare": {
+        "what": (
+            "Treatment of the company's own workforce: wages, health and "
+            "safety, freedom of association, turnover, workplace injuries, "
+            "scheduling, classification."
+        ),
+        "not_for": ("Conditions at suppliers, and pay for named executives."),
+    },
+    "executive_pay": {
+        "what": (
+            "Executive or director compensation: say-on-pay, severance, "
+            "clawbacks, performance metrics, the CEO-to-median-worker pay "
+            "ratio."
+        ),
+        "not_for": "Pay for the general workforce, considered on its own.",
+    },
+    "environmental": {
+        "what": (
+            "Environmental impact: greenhouse gas emissions, climate risk and "
+            "targets, pollution, water, waste, biodiversity, "
+            "environmental-justice siting."
+        ),
+        "not_for": "Worker health and safety, even where the hazard is chemical.",
+    },
+    "diversity": {
+        "what": (
+            "Composition and equity of the workforce or board: diversity data, "
+            "pay equity by gender or race, inclusion, equal-opportunity "
+            "reporting."
+        ),
+        "not_for": "General workforce conditions with no equity dimension.",
+    },
+    "political_spending": {
+        "what": (
+            "Political and lobbying activity: campaign contributions, PAC "
+            "spending, trade-association dues, lobbying disclosure, alignment "
+            "of that spending with stated company policy."
+        ),
+        "not_for": "Regulatory compliance that involves no political spending.",
+    },
+    "other": {
+        "what": (
+            "Anything else, including governance mechanics such as written "
+            "consent, special-meeting rights, board structure, auditor "
+            "ratification, or share issuance."
+        ),
+        "not_for": "Any proposal that fits one of the topics above.",
+    },
+}
 
-    Parameters
-    ----------
-    proposal_text:
-        Full text of the proposal (title + resolved clause).
 
-    Returns
-    -------
-    One of :data:`PROPOSAL_TOPICS`; defaults to ``'other'``.
+def build_topic_questions(proposal_texts: Sequence[str]) -> dict:
+    """Build one Choice per proposal, all sharing a single state."""
+    from typesafe_sdk import Choice
+
+    return {
+        f"topic_{i}": Choice(
+            instructions={
+                "question": (
+                    f"What is the subject of the shareholder proposal at `proposals[{i}].text`?"
+                ),
+                "focus": (
+                    "Judge what the proposal asks the company to do, not which "
+                    "words it happens to use. Pick the single best fit; choose "
+                    "'other' only when none of the named topics applies."
+                ),
+            },
+            criteria=_TOPIC_CRITERIA,
+        )
+        for i in range(len(proposal_texts))
+    }
+
+
+def keyword_topic_classifier(proposal_texts: Sequence[str]) -> list[str]:
+    """Substring classification, in the seam's shape. The default."""
+    return [_classify_by_keyword(text) for text in proposal_texts]
+
+
+def jev_topic_classifier(*, client=None, model: str | None = None):
+    """Return a classifier that asks Jev instead of racing keyword lists.
+
+    Every proposal in a filing travels in one request, so a proxy with eight
+    proposals costs one round trip rather than eight.
+
+    A transient service error falls back to keyword classification: a degraded
+    Jev should cost accuracy, not availability. A rejected credential is
+    re-raised, because it will reject every subsequent filing too and a silent
+    fallback would hide the misconfiguration.
     """
+    from cam import jev
+
+    resolved_client = client if client is not None else jev.default_client(model=model)
+
+    def classify(proposal_texts: Sequence[str]) -> list[str]:
+        texts = list(proposal_texts)
+        if not texts:
+            return []
+
+        state = {"proposals": [{"text": t} for t in texts]}
+        try:
+            response = jev.ask(
+                state, build_topic_questions(texts), client=resolved_client, model=model
+            )
+        except jev.FATAL_ERRORS:
+            logger.error(
+                "Jev rejected our credential while classifying proposals; check "
+                "TYPESAFE_API_KEY. Failing rather than silently downgrading to keywords."
+            )
+            raise
+        except jev.TRANSIENT_ERRORS as exc:
+            logger.warning("Jev unavailable for proposal topics (%s); using keywords.", exc)
+            return keyword_topic_classifier(texts)
+
+        # Guard the contract rather than trusting it: a topic outside
+        # PROPOSAL_TOPICS would propagate into ProposalData.topic and from
+        # there into the dashboard's topic facets.
+        topics: list[str] = []
+        for i in range(len(texts)):
+            choice = response.choices[f"topic_{i}"].choice
+            if choice not in PROPOSAL_TOPICS:
+                logger.warning("Jev returned unknown topic %r; recording as 'other'.", choice)
+                choice = "other"
+            topics.append(choice)
+        return topics
+
+    return classify
+
+
+def _classify_by_keyword(proposal_text: str) -> str:
+    """First keyword list containing a match wins; hence the table's order."""
     lower = proposal_text.lower()
     for topic, keywords in _TOPIC_KEYWORDS:
         if any(kw in lower for kw in keywords):
@@ -218,7 +367,51 @@ def classify_proposal_topic(proposal_text: str) -> str:
     return "other"
 
 
-def parse_proxy(filing_text: str, filing_date: date) -> ProxyData:
+def _default_topic_classifier() -> Callable[[Sequence[str]], list[str]]:
+    """Return the configured classifier: Jev when enabled, keywords otherwise."""
+    from cam import jev
+
+    if not jev.enabled("analysis_jev_enabled"):
+        return keyword_topic_classifier
+    return jev_topic_classifier()
+
+
+def classify_proposal_topic(
+    proposal_text: str,
+    *,
+    classifier: Callable[[Sequence[str]], list[str]] | None = None,
+) -> str:
+    """Classify a shareholder proposal into a topic category.
+
+    Parameters
+    ----------
+    proposal_text:
+        Full text of the proposal (title + resolved clause).
+    classifier:
+        Optional batched classifier ``(texts) -> topics``.  Defaults to
+        substring matching, or :func:`jev_topic_classifier` when
+        ``ANALYSIS_JEV_ENABLED`` is set.
+
+    Returns
+    -------
+    One of :data:`PROPOSAL_TOPICS`; defaults to ``'other'``.
+
+    Notes
+    -----
+    Classifying one proposal at a time costs one request each under the Jev
+    classifier.  :func:`parse_proxy` batches a whole filing instead; prefer
+    that, and reserve this for single lookups.
+    """
+    resolved = classifier if classifier is not None else _default_topic_classifier()
+    return resolved([proposal_text])[0]
+
+
+def parse_proxy(
+    filing_text: str,
+    filing_date: date,
+    *,
+    classifier: Callable[[Sequence[str]], list[str]] | None = None,
+) -> ProxyData:
     """Parse a DEF 14A proxy filing into structured :class:`ProxyData`.
 
     Handles common proxy formats including tabular vote results with
@@ -236,6 +429,10 @@ def parse_proxy(filing_text: str, filing_date: date) -> ProxyData:
     :class:`ProxyData` with all extractable fields populated.
     """
     result = ProxyData(filing_date=filing_date, say_on_pay_pct=None)
+    # Proposal texts, collected in block order and classified as one batch
+    # after the loop. Index i here always corresponds to
+    # result.shareholder_proposals[i].
+    topic_texts: list[str] = []
 
     # --- CEO total compensation ---
     ceo_match = re.search(
@@ -324,10 +521,10 @@ def parse_proxy(filing_text: str, filing_date: date) -> ProxyData:
         if proponent_m:
             proponent = proponent_m.group(1).strip()
 
-        # Classify topic from the resolved clause + surrounding text
+        # Collect the text now, classify the whole filing in one batch below.
+        # Classifying inside this loop would cost one request per proposal.
         resolved_m = re.search(r"RESOLVED.*?(?:\n\n|\Z)", block, re.IGNORECASE | re.DOTALL)
-        topic_text = resolved_m.group(0) if resolved_m else block
-        topic = classify_proposal_topic(topic_text)
+        topic_texts.append(resolved_m.group(0) if resolved_m else block)
 
         management_opposed = (
             management_recommendation == "AGAINST"
@@ -335,7 +532,8 @@ def parse_proxy(filing_text: str, filing_date: date) -> ProxyData:
 
         result.shareholder_proposals.append(
             ProposalData(
-                topic=topic,
+                # Placeholder; filled in by the batched classification below.
+                topic="other",
                 proponent=proponent,
                 vote_for_pct=for_pct,
                 vote_against_pct=against_pct,
@@ -344,6 +542,20 @@ def parse_proxy(filing_text: str, filing_date: date) -> ProxyData:
                 management_opposed=management_opposed,
             )
         )
+
+    # One classification call for the whole filing.
+    if topic_texts:
+        resolved_classifier = classifier if classifier is not None else _default_topic_classifier()
+        topics = resolved_classifier(topic_texts)
+        if len(topics) != len(result.shareholder_proposals):
+            # A classifier that loses or invents entries would silently
+            # misalign topics against proposals, so refuse rather than zip.
+            raise ValueError(
+                f"classifier returned {len(topics)} topics for "
+                f"{len(result.shareholder_proposals)} proposals"
+            )
+        for proposal, topic in zip(result.shareholder_proposals, topics):
+            proposal.topic = topic
 
     return result
 
