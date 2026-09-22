@@ -1,0 +1,158 @@
+{
+  "_comment": [
+    "Labelled gold set for Jev entity alignment (tests/smoke/test_jev_align.py).",
+    "Each case is a raw employer name as a US regulator writes it, a registry of",
+    "candidate company names as the SEC writes them, and the expected verdict.",
+    "",
+    "expected: 'merge'  -> the same company (including wholly owned subsidiaries,",
+    "                      brands, divisions and single facilities, whose",
+    "                      violations are attributed to the parent)",
+    "          'review'  -> same corporate family or genuinely ambiguous; a human",
+    "                      decides",
+    "          'reject'  -> not the same company, or not a company at all",
+    "",
+    "match_index is the 0-based index into candidates that a 'merge' must select.",
+    "Labels are hand-checked; extend this file rather than loosening the",
+    "accuracy floor in the test."
+  ],
+  "cases": [
+    {
+      "raw_name": "TYSON FOODS INC",
+      "source": "warn",
+      "candidates": ["Tyson Foods, Inc.", "Sanderson Farms, Inc.", "Pilgrim's Pride Corporation"],
+      "expected": "merge",
+      "match_index": 0,
+      "note": "formatting only"
+    },
+    {
+      "raw_name": "Tyson Fresh Meats, Inc.",
+      "source": "osha",
+      "candidates": ["Tyson Foods, Inc.", "Hormel Foods Corporation", "JBS USA"],
+      "expected": "merge",
+      "match_index": 0,
+      "note": "wholly owned subsidiary rolls up to the parent"
+    },
+    {
+      "raw_name": "SAFEWAY STORES 4680",
+      "source": "warn",
+      "candidates": ["Albertsons Companies, Inc.", "The Kroger Co.", "Sprouts Farmers Market, Inc."],
+      "expected": "merge",
+      "match_index": 0,
+      "note": "the motivating case: no shared tokens, subsidiary plus store number"
+    },
+    {
+      "raw_name": "WHOLE FOODS MARKET CALIFORNIA INC",
+      "source": "warn",
+      "candidates": ["Amazon.com, Inc.", "The Kroger Co.", "Sprouts Farmers Market, Inc."],
+      "expected": "merge",
+      "match_index": 0,
+      "note": "acquired subsidiary under a wholly different parent name"
+    },
+    {
+      "raw_name": "CVS PHARMACY #10745",
+      "source": "osha",
+      "candidates": ["CVS Health Corporation", "Walgreens Boots Alliance, Inc.", "Rite Aid Corporation"],
+      "expected": "merge",
+      "match_index": 0,
+      "note": "brand plus store number"
+    },
+    {
+      "raw_name": "Kroger Limited Partnership I",
+      "source": "epa",
+      "candidates": ["The Kroger Co.", "Albertsons Companies, Inc.", "Publix Super Markets, Inc."],
+      "expected": "merge",
+      "match_index": 0,
+      "note": "operating partnership of the parent"
+    },
+    {
+      "raw_name": "DELTA AIR LINES INC",
+      "source": "osha",
+      "candidates": ["Delta Air Lines, Inc.", "Delta Apparel, Inc.", "American Airlines Group Inc."],
+      "expected": "merge",
+      "match_index": 0,
+      "note": "must not pick the same-first-word distractor"
+    },
+    {
+      "raw_name": "Delta Apparel",
+      "source": "warn",
+      "candidates": ["Delta Air Lines, Inc.", "Delta Apparel, Inc.", "Hanesbrands Inc."],
+      "expected": "merge",
+      "match_index": 1,
+      "note": "the shared first word must not win"
+    },
+    {
+      "raw_name": "FIRST NATIONAL BANK OF OMAHA",
+      "source": "cfpb",
+      "candidates": ["First Republic Bank", "First Horizon Corporation", "U.S. Bancorp"],
+      "expected": "reject",
+      "note": "generic 'First National' shares no real identity with any candidate"
+    },
+    {
+      "raw_name": "APPLE ORCHARD FARMS LLC",
+      "source": "osha",
+      "candidates": ["Apple Inc.", "Apple Hospitality REIT, Inc.", "Dole plc"],
+      "expected": "reject",
+      "note": "common-word coincidence"
+    },
+    {
+      "raw_name": "Unknown",
+      "source": "warn",
+      "candidates": ["Tyson Foods, Inc.", "The Kroger Co.", "Amazon.com, Inc."],
+      "expected": "reject",
+      "note": "placeholder row; the global raw_is_company screen should catch it"
+    },
+    {
+      "raw_name": "Confidential Employer",
+      "source": "warn",
+      "candidates": ["Comfort Systems USA, Inc.", "Conduent Incorporated", "Concentrix Corporation"],
+      "expected": "reject",
+      "note": "placeholder that fuzzy-matches nothing meaningful"
+    },
+    {
+      "raw_name": "Maria Gonzalez",
+      "source": "osha",
+      "candidates": ["Mariner Finance, LLC", "Marathon Oil Corporation", "Marsh & McLennan Companies, Inc."],
+      "expected": "reject",
+      "note": "a person, not a business"
+    },
+    {
+      "raw_name": "STARBUCKS CORPORATION - SEATTLE WA",
+      "source": "osha",
+      "candidates": ["Starbucks Corporation", "Dutch Bros Inc.", "The Wendy's Company"],
+      "expected": "merge",
+      "match_index": 0,
+      "note": "location suffix the ingestion cleaner may not have stripped"
+    },
+    {
+      "raw_name": "UNITED AIRLINES",
+      "source": "warn",
+      "candidates": ["United Airlines Holdings, Inc.", "United Natural Foods, Inc.", "United Rentals, Inc."],
+      "expected": "merge",
+      "match_index": 0,
+      "note": "three 'United' candidates; only one is the airline"
+    },
+    {
+      "raw_name": "AMAZON.COM SERVICES LLC",
+      "source": "warn",
+      "candidates": ["Amazon.com, Inc.", "Alphabet Inc.", "Walmart Inc."],
+      "expected": "merge",
+      "match_index": 0,
+      "note": "operating entity of the filer"
+    },
+    {
+      "raw_name": "GENERAL MOTORS LLC",
+      "source": "epa",
+      "candidates": ["General Motors Company", "General Dynamics Corporation", "General Mills, Inc."],
+      "expected": "merge",
+      "match_index": 0,
+      "note": "'General' distractors"
+    },
+    {
+      "raw_name": "Sunrise Senior Living",
+      "source": "warn",
+      "candidates": ["Sunrun Inc.", "Sunnova Energy International Inc.", "Brookdale Senior Living Inc."],
+      "expected": "reject",
+      "note": "no candidate is this company; must not settle for a near string"
+    }
+  ]
+}

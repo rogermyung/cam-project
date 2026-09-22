@@ -32,4 +32,7 @@ jobs:
           # No DB is touched — this dummy value only satisfies Settings validation.
           DATABASE_URL: "sqlite:///:memory:"
           EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT || 'smoke@cam-project.org' }}
+          # Optional. When absent, tests/smoke/test_jev_align.py skips rather
+          # than failing, so the run costs nothing until the secret is set.
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
         run: python -m pytest tests/smoke -m live -v

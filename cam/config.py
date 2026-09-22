@@ -127,6 +127,49 @@ class Settings(BaseSettings):
     entity_fuzzy_threshold: float = Field(default=0.85)
     entity_review_threshold: float = Field(default=0.65)
 
+    # TypeSafe / Jev — entity alignment (cam.entity.jev_align)
+    typesafe_api_key: str | None = Field(
+        default=None,
+        description=(
+            "API key from console.typesafe.ai. Required only when entity_jev_enabled is true."
+        ),
+    )
+    jev_model: str = Field(
+        default="jev-latest",
+        description="TypeSafe System One model id used for entity alignment.",
+    )
+    entity_jev_enabled: bool = Field(
+        default=False,
+        description=(
+            "Opt in to Jev-backed entity alignment as the resolver's external "
+            "lookup step. Off by default: it needs a credential and bills per "
+            "token, and the resolver must keep working without it."
+        ),
+    )
+    entity_jev_candidate_limit: int = Field(
+        default=5,
+        description=(
+            "How many rapidfuzz candidates to put in front of Jev per raw name. "
+            "Each candidate adds three questions to the single batched request, "
+            "so this trades recall against tokens."
+        ),
+    )
+    entity_jev_merge_level: float = Field(
+        default=1.5,
+        description=(
+            "same_entity Score (0-2) at or above which a match is auto-merged. "
+            "The default is the round-to-nearest-level boundary for 'the same "
+            "company', i.e. no fitted threshold."
+        ),
+    )
+    entity_jev_review_level: float = Field(
+        default=0.5,
+        description=(
+            "same_entity Score (0-2) at or above which a match goes to the "
+            "manual review queue instead of being discarded."
+        ),
+    )
+
     # Output
     # Optional here so workers/Celery can start without an API credential.
     # The API layer must assert this is set before accepting requests.

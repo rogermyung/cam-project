@@ -160,12 +160,12 @@ Analysis modules transform ingested data into **Signal** records written to the 
 
 ```python
 Signal(
-    entity_id = UUID,       # which entity
-    source    = str,        # module identifier ('edgar_10k', 'earnings_call', ...)
-    signal_type = str,      # semantic type (see below)
-    score       = float,    # 0.0–1.0 normalized severity
-    evidence    = str,      # human-readable explanation
-    signal_date = date,     # effective date of the signal
+    entity_id=UUID,  # which entity
+    source=str,  # module identifier ('edgar_10k', 'earnings_call', ...)
+    signal_type=str,  # semantic type (see below)
+    score=float,  # 0.0–1.0 normalized severity
+    evidence=str,  # human-readable explanation
+    signal_date=date,  # effective date of the signal
 )
 ```
 
@@ -218,12 +218,12 @@ Component signal map:
 
 ```python
 _COMPONENT_SIGNAL_MAP = {
-    "cross_agency_composite":  "cross_agency_composite",  # M6
-    "risk_language_expansion": "risk_language_expansion", # M7
-    "earnings_divergence":     "earnings_divergence",     # M8
-    "proxy_escalation":        "proxy_escalation",        # M9
-    "merger_vertical_risk":    "merger_vertical_risk",    # M10
-    "pe_warn_flag":            "pe_owned",                # M12
+    "cross_agency_composite": "cross_agency_composite",  # M6
+    "risk_language_expansion": "risk_language_expansion",  # M7
+    "earnings_divergence": "earnings_divergence",  # M8
+    "proxy_escalation": "proxy_escalation",  # M9
+    "merger_vertical_risk": "merger_vertical_risk",  # M10
+    "pe_warn_flag": "pe_owned",  # M12
 }
 ```
 
@@ -335,10 +335,11 @@ All configuration is loaded from environment variables via **Pydantic Settings**
 
 ```python
 from cam.config import get_settings
+
 settings = get_settings()
-settings.alert_threshold_watch    # 0.40
-settings.alert_threshold_elevated # 0.65
-settings.alert_threshold_critical # 0.80
+settings.alert_threshold_watch  # 0.40
+settings.alert_threshold_elevated  # 0.65
+settings.alert_threshold_critical  # 0.80
 ```
 
 Alert thresholds and aggregation weights can be overridden via environment variables (e.g. `ALERT_THRESHOLD_WATCH=0.35`).
