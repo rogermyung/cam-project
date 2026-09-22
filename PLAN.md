@@ -150,12 +150,13 @@ CREATE TABLE ingest_checkpoints (
 ```python
 # cam/ingestion/dlq.py
 
+
 def record_failure(
     db: Session,
     source: str,
     run_id: UUID,
     raw_record: dict,
-    error_type: str,            # 'entity_resolution' | 'validation' | 'db_write' | 'api_error'
+    error_type: str,  # 'entity_resolution' | 'validation' | 'db_write' | 'api_error'
     exc: Exception,
     raw_key: str | None = None,
 ) -> IngestFailure:
@@ -163,6 +164,7 @@ def record_failure(
     Write a failed record to the DLQ.  Never raises — if the DLQ write itself fails,
     logs to stderr and returns None so the caller can keep processing other records.
     """
+
 
 def open_failures(
     db: Session,
@@ -172,8 +174,10 @@ def open_failures(
 ) -> list[IngestFailure]:
     """Return unresolved DLQ entries, optionally filtered by source or error type."""
 
+
 def mark_resolved(db: Session, failure_ids: list[UUID], note: str = "") -> int:
     """Mark DLQ entries as resolved (manually processed or dismissed). Returns count."""
+
 
 def replay_failures(
     db: Session,
@@ -189,25 +193,28 @@ def replay_failures(
 
 # cam/ingestion/checkpoint.py
 
+
 def save_checkpoint(
     db: Session,
     source: str,
     run_id: UUID,
-    cursor: dict,               # source-specific: {"page": 5} or {"cik": "0001234"} etc.
+    cursor: dict,  # source-specific: {"page": 5} or {"cik": "0001234"} etc.
     records_ok: int,
     records_err: int,
 ) -> None:
     """Upsert checkpoint. Called periodically during long ingestion runs."""
 
+
 def load_checkpoint(
     db: Session,
     source: str,
-    run_id: UUID | None = None, # None = load latest incomplete run
+    run_id: UUID | None = None,  # None = load latest incomplete run
 ) -> dict | None:
     """
     Return the cursor dict from the latest incomplete checkpoint for this source,
     or None if no checkpoint exists (start from beginning).
     """
+
 
 def complete_checkpoint(db: Session, source: str, run_id: UUID) -> None:
     """Mark a run's checkpoint as completed."""
@@ -234,7 +241,10 @@ if result.entity_id is None:
 result = resolve(raw_name, source=source)
 if result.entity_id is None and not result.needs_review:
     record_failure(
-        db, source=source, run_id=run_id, raw_record=record,
+        db,
+        source=source,
+        run_id=run_id,
+        raw_record=record,
         error_type="entity_resolution",
         exc=EntityResolutionError(f"No match: conf={result.confidence:.2f}"),
         raw_key=record.get("idempotency_key"),
@@ -262,8 +272,14 @@ for i, record in enumerate(records):
         stats.err += 1
 
     if i % CHECKPOINT_EVERY == 0:
-        save_checkpoint(db, source=source, run_id=run_id,
-                        cursor={"offset": i}, records_ok=stats.ok, records_err=stats.err)
+        save_checkpoint(
+            db,
+            source=source,
+            run_id=run_id,
+            cursor={"offset": i},
+            records_ok=stats.ok,
+            records_err=stats.err,
+        )
 
 complete_checkpoint(db, source=source, run_id=run_id)
 ```
@@ -277,7 +293,7 @@ A single bad record must not roll back progress for the entire batch. Each entit
 ```python
 for entity_id, records in grouped_by_entity.items():
     try:
-        with db.begin_nested():   # SAVEPOINT
+        with db.begin_nested():  # SAVEPOINT
             for r in records:
                 db.add(Event(...))
             db.flush()
@@ -296,12 +312,14 @@ Prevent a down API from consuming the full retry budget on every record. Each in
 ```python
 # cam/ingestion/circuit_breaker.py
 
+
 class CircuitBreaker:
     """
     Three states: CLOSED (normal), OPEN (failing fast), HALF_OPEN (testing).
     Opens after `failure_threshold` consecutive errors.
     Resets to HALF_OPEN after `recovery_timeout` seconds.
     """
+
     def __init__(self, name: str, failure_threshold: int = 5, recovery_timeout: int = 300): ...
 
     def call(self, fn: Callable, *args, **kwargs):
@@ -327,7 +345,7 @@ logger.error(
         "raw_key": raw_key,
         "entity_name": raw_record.get("company_name"),
         "error": str(exc),
-    }
+    },
 )
 ```
 
@@ -340,13 +358,13 @@ Extend the existing `IngestResult` dataclass to include DLQ context:
 ```python
 @dataclass
 class IngestResult:
-    total:       int = 0
-    ingested:    int = 0
-    skipped:     int = 0      # already in DB (idempotency)
-    errors:      int = 0      # failed + sent to DLQ
-    dlq_ids:     list[UUID] = field(default_factory=list)   # NEW
-    run_id:      UUID         = field(default_factory=uuid4) # NEW
-    checkpoint:  dict | None  = None                         # NEW — last saved cursor
+    total: int = 0
+    ingested: int = 0
+    skipped: int = 0  # already in DB (idempotency)
+    errors: int = 0  # failed + sent to DLQ
+    dlq_ids: list[UUID] = field(default_factory=list)  # NEW
+    run_id: UUID = field(default_factory=uuid4)  # NEW
+    checkpoint: dict | None = None  # NEW — last saved cursor
 ```
 
 ### CLI Commands
@@ -446,6 +464,7 @@ CREATE INDEX idx_signals_review_queue
 ```python
 # cam/entity/review.py
 
+
 def list_pending(
     db: Session,
     source: str | None = None,
@@ -458,10 +477,11 @@ def list_pending(
     candidate_name, confidence, source, evidence snippet, created_at.
     """
 
+
 def approve(
     db: Session,
     signal_id: UUID,
-    entity_id: UUID,            # may differ from candidate (operator picks correct entity)
+    entity_id: UUID,  # may differ from candidate (operator picks correct entity)
     reviewed_by: str,
     note: str = "",
 ) -> None:
@@ -472,6 +492,7 @@ def approve(
     3. Replay any DLQ entries with matching raw_key
     4. Mark signal review_status='approved'
     """
+
 
 def reject(
     db: Session,
@@ -485,8 +506,10 @@ def reject(
     are marked resolved with error='rejected_by_operator'.
     """
 
+
 def defer(db: Session, signal_id: UUID, reviewed_by: str, note: str = "") -> None:
     """Push item to the back of the queue (sets review_status='deferred')."""
+
 
 def export_pending_csv(db: Session, path: Path, source: str | None = None) -> int:
     """
@@ -495,6 +518,7 @@ def export_pending_csv(db: Session, path: Path, source: str | None = None) -> in
              confidence, source, created_at.
     Returns row count.
     """
+
 
 def import_decisions_csv(db: Session, path: Path, reviewed_by: str) -> ImportResult:
     """

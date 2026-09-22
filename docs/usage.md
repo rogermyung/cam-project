@@ -408,7 +408,9 @@ with get_session() as db:
             f"NAICS {row['industry']}: PE rate = {row['pe_rate']:.3f}, "
             f"non-PE rate = {row['non_pe_rate']:.3f}, "
             f"ratio = {row['rate_ratio']:.2f}x, "
-            f"p = {row['p_value']:.4f}" if row['p_value'] else "p = N/A"
+            f"p = {row['p_value']:.4f}"
+            if row["p_value"]
+            else "p = N/A"
         )
 ```
 
