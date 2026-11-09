@@ -144,17 +144,39 @@ def _parse_csv(content: bytes, cfg: StateConfig) -> list[WarnRecord]:
     records: list[WarnRecord] = []
     text = content.decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
+    if reader.fieldnames is None:
+        return []
+
+    header_lookup: dict[str, str] = {}
+    for header in reader.fieldnames:
+        key = header.strip().lower()
+        if key not in header_lookup:
+            header_lookup[key] = header
+
     for row in reader:
-        raw_company = row.get(cols.get("company", ""), "")
+
+        def resolve_header(canonical: str) -> str:
+            configured = cols.get(canonical, "") or ""
+            configured_key = configured.strip().lower()
+            return header_lookup.get(configured_key, "")
+
+        company_header = resolve_header("company")
+        date_header = resolve_header("date")
+        employees_header = resolve_header("employees")
+        city_header = resolve_header("city")
+        county_header = resolve_header("county")
+        layoff_type_header = resolve_header("layoff_type")
+
+        raw_company = row.get(company_header, "")
         records.append(
             WarnRecord(
                 state_code=cfg.state_code,
                 company=_clean_name(raw_company),
-                notice_date=_parse_date(row.get(cols.get("date", ""), ""), cfg.date_fmt),
-                employees_affected=_parse_employees(row.get(cols.get("employees", ""), "")),
-                city=(row.get(cols.get("city", ""), "") or "").strip(),
-                county=(row.get(cols.get("county", ""), "") or "").strip(),
-                layoff_type=(row.get(cols.get("layoff_type", ""), "") or "").strip(),
+                notice_date=_parse_date(row.get(date_header, ""), cfg.date_fmt),
+                employees_affected=_parse_employees(row.get(employees_header, "")),
+                city=(row.get(city_header, "") or "").strip(),
+                county=(row.get(county_header, "") or "").strip(),
+                layoff_type=(row.get(layoff_type_header, "") or "").strip(),
                 raw=dict(row),
             )
         )
@@ -231,6 +253,10 @@ def parse(content: bytes, cfg: StateConfig) -> list[WarnRecord]:
         from ._xlsx import parse_ca_xlsx
 
         return parse_ca_xlsx(content)
+    if cfg.format == "pa_html":
+        from ._pa import parse_pa
+
+        return parse_pa(content)
     if cfg.format == "mi_json":
         from ._mi import parse_mi
 

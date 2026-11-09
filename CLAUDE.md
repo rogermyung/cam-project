@@ -30,6 +30,7 @@ cam/
     ├── state_urls.py  # STATE_CONFIGS: one StateConfig per state
     ├── _xlsx.py       # California workbook parser
     ├── _mi.py         # Michigan JSON API parser
+    ├── _pa.py         # Pennsylvania accordion-page parser
     ├── runner.py      # run(): fetch each state, merge, write notices.csv + status.json
     └── build.py       # build(): notices.csv -> site/data/{notices,summary,meta}.json
 data/warn/             # notices.csv (source of truth), status.json

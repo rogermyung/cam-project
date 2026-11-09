@@ -42,13 +42,13 @@ county, notice_type, source_url, first_seen`.
 
 ## State coverage
 
-| State | Source format | Status (2026-11-09) |
-|---|---|---|
-| CA | XLSX workbook | Working |
-| MI | JSON search API | Working |
-| TX | HTML page | Broken: the live page has no table the parser recognises |
-| NY | HTML page | Broken: parses to 0 records |
-| PA | HTML page | Broken: the live page has no table the parser recognises |
+| State | Source | Notices (2026-11-09) | Notes |
+|---|---|---|---|
+| CA | Agency XLSX workbook | 457 | Rolling window, roughly the last five months |
+| MI | Agency JSON search API | 41 | `notice_date` is the layoff date |
+| NY | Tableau dashboard CSV export | 225 | Current year; one row per affected site |
+| PA | Agency accordion page | 319 | Back to 2022. `notice_date` is the layoff effective date; about 5% of notices have no parseable date |
+| TX | Texas Open Data Portal CSV | 2,347 | Back to 2019. The agency page is behind a bot challenge, so this uses the portal copy, which lagged by about four months on this date |
 
 A state that fails keeps its previous rows and is reported as `FAILED`; it does
 not stop the others. The command exits non-zero only when every state fails or

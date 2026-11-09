@@ -4,7 +4,7 @@ Status: Stage 0 and Stage 1 implemented on branch `simplify/warn-tracker` (2026-
 
 Deviations from the plan as written, found during Stage 1:
 
-- **TX, NY and PA do not parse live.** Their pages return HTTP 200 but contain no table the parser recognises, so only CA and MI produce data. The earlier "reachable" smoke result only checked the status code. All three stay configured and are reported as failed until their parsers are fixed.
+- **TX, NY and PA needed new sources.** Their configured pages returned HTTP 200 but no parseable table; the earlier "reachable" smoke result only checked the status code. Fixed the same day: TX now reads the Texas Open Data Portal CSV (the agency page is behind a bot challenge; the portal copy lags), NY reads the Tableau dashboard CSV export, and PA has its own accordion-page parser. All five states produce data.
 - **Row schema** is `key, state, employer, notice_date, employees, city, county, notice_type, source_url, first_seen`. The sources carry no separate effective date, and the dedup key now includes the city so two sites of one employer filed on the same day are kept apart.
 - **A sharp drop in a state's row count marks it `degraded`** in `status.json` instead of failing the run, because sources that publish a rolling window shrink legitimately.
 - **`cam/ingestion/cfpb.py` was removed with the rest** since it cannot import without the database layer. Stage 3 should port it from the `archive/full-pipeline` tag.
