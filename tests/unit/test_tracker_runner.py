@@ -8,6 +8,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+
 from cam.store import load
 from cam.warn import FIELDNAMES
 from cam.warn.runner import RunFailed, run
@@ -16,14 +17,15 @@ from cam.warn.state_urls import STATE_CONFIGS
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "warn"
 TODAY = date(2026, 11, 9)
 EMPTY_PAGE = b"<html><body><p>no table here</p></body></html>"
+TX_HEADER = b'"notice_date","job_site_name","county_name","wda_name","total_layoff_number","layoff_date","wfdd_received_date","city_name"\n'
 
 
 def make_fetcher(overrides: dict[str, object] | None = None):
-    """Fake fetcher: CA=9 rows, MI=6, TX=4; NY and PA return a page with no table."""
+    """Fake fetcher: CA=9 rows, MI=6, TX=8; NY and PA return a page with no notices."""
     payloads: dict[str, object] = {
         "CA": (FIXTURES / "ca_warn_report.xlsx").read_bytes(),
         "MI": (FIXTURES / "mi_warn_sample.json").read_bytes(),
-        "TX": (FIXTURES / "tx_warn_sample.html").read_bytes(),
+        "TX": (FIXTURES / "tx_socrata_sample.csv").read_bytes(),
         "NY": EMPTY_PAGE,
         "PA": EMPTY_PAGE,
     }
@@ -57,12 +59,12 @@ def status(data_dir: Path) -> dict:
 def test_run_writes_notices_csv_with_schema_and_counts(tmp_path):
     report = run(tmp_path, fetcher=make_fetcher(), today=TODAY)
     rows = notices(tmp_path)
-    assert len(rows) == 19
+    assert len(rows) == 23
     assert list(rows[0]) == FIELDNAMES
     assert {r["state"] for r in rows} == {"CA", "MI", "TX"}
     assert all(r["first_seen"] == "2026-11-09" for r in rows)
-    assert report["total"] == 19
-    assert report["added"] == 19
+    assert report["total"] == 23
+    assert report["added"] == 23
 
 
 def test_run_records_source_url_per_state(tmp_path):
@@ -82,17 +84,15 @@ def test_second_run_adds_nothing_and_leaves_csv_byte_identical(tmp_path):
     before = (tmp_path / "warn" / "notices.csv").read_bytes()
     report = run(tmp_path, fetcher=make_fetcher(), today=date(2026, 11, 16))
     assert report["added"] == 0
-    assert report["total"] == 19
+    assert report["total"] == 23
     assert (tmp_path / "warn" / "notices.csv").read_bytes() == before
 
 
 def test_records_with_blank_company_are_skipped(tmp_path):
     html = (
-        b"<table><tr><th>Company Name</th><th>City</th><th>County</th>"
-        b"<th>Number of Employees</th><th>Layoff Date</th><th>Type of Layoff</th></tr>"
-        b"<tr><td>  </td><td>Austin</td><td>Travis</td><td>10</td><td>01/02/2026</td><td>Layoff</td></tr>"
-        b"<tr><td>Real Co</td><td>Austin</td><td>Travis</td><td>10</td><td>01/02/2026</td><td>Layoff</td></tr>"
-        b"</table>"
+        TX_HEADER
+        + b'"2026-01-02T00:00:00.000","  ","Travis","X","10","","","Austin"\n'
+        + b'"2026-01-02T00:00:00.000","Real Co","Travis","X","10","","","Austin"\n'
     )
     run(tmp_path, states=["TX"], fetcher=make_fetcher({"TX": html}), today=TODAY)
     assert [r["employer"] for r in notices(tmp_path)] == ["Real Co"]
@@ -115,7 +115,7 @@ def test_status_json_reports_each_state(tmp_path):
         "degraded": False,
     }
     assert st["MI"]["fetched"] == 6
-    assert st["TX"]["fetched"] == 4
+    assert st["TX"]["fetched"] == 8
     assert report["states"] == st
 
 
@@ -136,7 +136,7 @@ def test_one_state_raising_does_not_stop_the_others(tmp_path):
     assert st["CA"]["ok"] is False
     assert "connection refused" in st["CA"]["error"]
     assert st["TX"]["ok"] is True
-    assert report["total"] == 10
+    assert report["total"] == 14
 
 
 def test_failed_state_keeps_previous_rows_last_success_and_fetched(tmp_path):
@@ -154,12 +154,7 @@ def test_failed_state_keeps_previous_rows_last_success_and_fetched(tmp_path):
 
 def test_state_is_degraded_when_fetch_count_drops_below_half(tmp_path):
     run(tmp_path, fetcher=make_fetcher(), today=TODAY)
-    one_row = (
-        b"<table><tr><th>Company Name</th><th>City</th><th>County</th>"
-        b"<th>Number of Employees</th><th>Layoff Date</th><th>Type of Layoff</th></tr>"
-        b"<tr><td>Solo Co</td><td>Waco</td><td>McLennan</td><td>5</td><td>02/02/2026</td><td>Layoff</td></tr>"
-        b"</table>"
-    )
+    one_row = TX_HEADER + b'"2026-02-02T00:00:00.000","Solo Co","McLennan","X","5","","","Waco"\n'
     run(tmp_path, fetcher=make_fetcher({"TX": one_row}), today=date(2026, 11, 16))
     st = status(tmp_path)
     assert st["TX"]["ok"] is True
@@ -201,7 +196,7 @@ def test_run_fails_loudly_when_every_state_fails(tmp_path):
         run(tmp_path, fetcher=fetcher, today=date(2026, 11, 16))
     # status is still written so the failure is visible, and old rows survive
     assert status(tmp_path)["CA"]["last_attempt"] == "2026-11-16"
-    assert len(notices(tmp_path)) == 19
+    assert len(notices(tmp_path)) == 23
 
 
 def test_run_fails_loudly_on_a_fresh_directory_with_no_data(tmp_path):
@@ -223,11 +218,11 @@ def test_cli_warn_runs_and_returns_zero(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("cam.warn.runner.fetch", make_fetcher())
     code = main(["warn", "--data-dir", str(tmp_path), "--no-build"])
     assert code == 0
-    assert len(notices(tmp_path)) == 19
+    assert len(notices(tmp_path)) == 23
     out = capsys.readouterr().out
     for state in ("CA", "TX", "NY", "PA", "MI"):
         assert state in out
-    assert "19" in out
+    assert "23" in out
 
 
 def test_cli_states_option_limits_the_run(tmp_path, monkeypatch):

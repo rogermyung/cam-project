@@ -41,13 +41,28 @@ CSV_CFG = StateConfig(
 )
 
 
+HTML_CFG = StateConfig(
+    state_code="TX",
+    url="https://example.test/tx.html",
+    format="html",
+    columns={
+        "company": "Company Name",
+        "date": "Layoff Date",
+        "employees": "Number of Employees",
+        "city": "City",
+        "county": "County",
+        "layoff_type": "Type of Layoff",
+    },
+)
+
+
 # --- no heavyweight dependencies ------------------------------------------------
 
 
 def test_package_imports_without_database_or_pipeline_modules():
     code = (
         "import sys\n"
-        "import cam.warn, cam.warn._xlsx, cam.warn._mi, cam.warn.state_urls\n"
+        "import cam.warn, cam.warn._xlsx, cam.warn._mi, cam.warn._pa, cam.warn.state_urls\n"
         "banned_roots = {'sqlalchemy', 'celery', 'redis', 'boto3', 'alembic', 'pdfplumber'}\n"
         "banned_prefixes = ('cam.db', 'cam.entity', 'cam.ingestion', 'cam.config', "
         "'cam.analysis', 'cam.alerts')\n"
@@ -69,8 +84,9 @@ def test_only_the_five_working_states_are_configured():
 def test_state_formats():
     assert STATE_CONFIGS["CA"].format == "xlsx"
     assert STATE_CONFIGS["MI"].format == "mi_json"
-    for code in ("TX", "NY", "PA"):
-        assert STATE_CONFIGS[code].format == "html"
+    assert STATE_CONFIGS["PA"].format == "pa_html"
+    for code in ("TX", "NY"):
+        assert STATE_CONFIGS[code].format == "csv"
     for code, cfg in STATE_CONFIGS.items():
         assert cfg.state_code == code
         assert cfg.url.startswith("https://")
@@ -102,7 +118,7 @@ def test_parse_csv_strips_location_suffix_from_company():
 
 
 def test_parse_html_fixture():
-    records = parse((FIXTURES / "tx_warn_sample.html").read_bytes(), STATE_CONFIGS["TX"])
+    records = parse((FIXTURES / "tx_warn_sample.html").read_bytes(), HTML_CFG)
     assert len(records) == 4
     assert records[0].company == "Lone Star Energy Services LLC"
     assert records[0].notice_date == date(2023, 4, 1)
@@ -114,7 +130,7 @@ def test_parse_html_fixture():
 
 
 def test_parse_html_without_table_returns_empty_list():
-    assert parse(b"<html><body><p>moved</p></body></html>", STATE_CONFIGS["TX"]) == []
+    assert parse(b"<html><body><p>moved</p></body></html>", HTML_CFG) == []
 
 
 def test_parse_xlsx_fixture_via_ca_config():

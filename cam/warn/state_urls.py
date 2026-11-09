@@ -29,7 +29,7 @@ class StateConfig:
 
     state_code: str
     url: str
-    format: str  # "csv" | "html" | "pdf"
+    format: str  # "csv" | "html" | "xlsx" | "mi_json" | "pa_html"
     # Mapping from canonical field names to column headers in the source data.
     # Canonical keys: "company", "date", "employees", "city", "county", "layoff_type"
     columns: dict[str, str] = field(default_factory=dict)
@@ -63,50 +63,57 @@ STATE_CONFIGS: dict[str, StateConfig] = {
         },
         date_fmt="%m/%d/%Y",
     ),
-    # TX moved to https://www.twc.texas.gov/data-reports/warn-notice
+    # TX: the agency page (twc.texas.gov/data-reports/warn-notice) sits behind an
+    # AWS WAF JavaScript challenge that non-browser clients cannot pass.  The same
+    # notices are published on the Texas Open Data Portal (Socrata dataset
+    # 8w53-c4f6), which serves plain CSV going back to 2019.  The portal copy can
+    # lag the agency page by weeks or months.
     "TX": StateConfig(
         state_code="TX",
-        url="https://www.twc.texas.gov/data-reports/warn-notice",
-        format="html",
+        url="https://data.texas.gov/resource/8w53-c4f6.csv?$limit=50000",
+        format="csv",
         columns={
-            "company": "Company Name",
-            "date": "Layoff Date",
-            "employees": "Number of Employees",
-            "city": "City",
-            "county": "County",
-            "layoff_type": "Type of Layoff",
+            "company": "job_site_name",
+            "date": "notice_date",
+            "employees": "total_layoff_number",
+            "city": "city_name",
+            "county": "county_name",
         },
-        date_fmt="%m/%d/%Y",
+        date_fmt="%Y-%m-%dT%H:%M:%S.%f",
     ),
-    # NY moved to legacy-warn-notices
+    # NY: dol.ny.gov/legacy-warn-notices is a frozen archive (last entry March
+    # 2025).  Current notices live in a Tableau Public dashboard embedded at
+    # dol.ny.gov/warn-dashboard; appending ".csv" to the view URL exports its data.
+    # The export's headers carry stray trailing spaces and one duplicated column,
+    # so header matching in the CSV parser ignores surrounding whitespace and case.
     "NY": StateConfig(
         state_code="NY",
-        url="https://dol.ny.gov/legacy-warn-notices",
-        format="html",
+        url=(
+            "https://public.tableau.com/views/"
+            "WorkerAdjustmentRetrainingNotificationWARN/WARN.csv?:showVizHome=no"
+        ),
+        format="csv",
         columns={
-            "company": "Employer",
-            "date": "Effective Date",
-            "employees": "Employees Affected",
-            "city": "Region",
-            "county": "County",
-            "layoff_type": "Reason",
+            "company": "Business Legal Name",
+            "date": "Date of WARN Notice",
+            "employees": "Number of Affected Workers",
+            "city": "Impacted Site Address",
+            "county": "Impacted Site County",
+            "layoff_type": "Layoff or Closure?",
         },
-        date_fmt="%m/%d/%Y",
+        date_fmt="%Y-%m-%d",
     ),
-    # PA moved to pa.gov in 2026
+    # PA: notices are not in a table.  The listing page is a set of nested
+    # accordions (month -> one item per employer) with labelled free-text lines.
+    # Parsed by cam.warn._pa.parse_pa; the ``columns`` map is unused.  PA publishes
+    # only the layoff effective date, which is stored as the notice date.
     "PA": StateConfig(
         state_code="PA",
-        url="https://www.pa.gov/agencies/dli/programs-services/workforce-development-home/warn-requirements.html",
-        format="html",
-        columns={
-            "company": "Company",
-            "date": "Effective Date",
-            "employees": "Affected Workers",
-            "city": "Municipality",
-            "county": "County",
-            "layoff_type": "Type",
-        },
-        date_fmt="%m/%d/%Y",
+        url=(
+            "https://www.pa.gov/agencies/dli/programs-services/"
+            "workforce-development-home/warn-requirements/warn-notices"
+        ),
+        format="pa_html",
     ),
     # MI retired the old .../wd/warn HTML page (now 404) in 2026.  The current
     # notices come from the Sitecore search API behind the JS listing page at

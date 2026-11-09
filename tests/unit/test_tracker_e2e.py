@@ -19,8 +19,8 @@ def test_cli_fetch_merge_build_end_to_end(tmp_path, monkeypatch):
     summary = json.loads((site / "summary.json").read_text())
     meta = json.loads((site / "meta.json").read_text())
 
-    assert len(notices) == 19
-    assert meta["total_notices"] == 19
+    assert len(notices) == 23
+    assert meta["total_notices"] == 23
     assert {s["state"] for s in summary["by_state"]} == {"CA", "MI", "TX"}
     assert meta["states"]["NY"]["ok"] is False
 
