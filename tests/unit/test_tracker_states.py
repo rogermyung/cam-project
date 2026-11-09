@@ -13,9 +13,9 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from cam.warn._pa import parse_pa
 
 from cam.warn import WarnRecord, parse, record_key
+from cam.warn._pa import parse_pa
 from cam.warn.state_urls import STATE_CONFIGS, StateConfig
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "warn"
