@@ -1,0 +1,405 @@
+{
+  "by_state": [
+    {
+      "state": "CA",
+      "notices": 30,
+      "employees": 3191
+    },
+    {
+      "state": "MI",
+      "notices": 31,
+      "employees": 4921
+    },
+    {
+      "state": "NY",
+      "notices": 32,
+      "employees": 2180
+    },
+    {
+      "state": "PA",
+      "notices": 32,
+      "employees": 4736
+    },
+    {
+      "state": "TX",
+      "notices": 32,
+      "employees": 6061
+    }
+  ],
+  "by_month": [
+    {
+      "month": "2024-09",
+      "notices": 1,
+      "employees": 0
+    },
+    {
+      "month": "2025-06",
+      "notices": 1,
+      "employees": 0
+    },
+    {
+      "month": "2025-12",
+      "notices": 1,
+      "employees": 0
+    },
+    {
+      "month": "2026-04",
+      "notices": 17,
+      "employees": 3579
+    },
+    {
+      "month": "2026-05",
+      "notices": 7,
+      "employees": 1322
+    },
+    {
+      "month": "2026-06",
+      "notices": 9,
+      "employees": 1160
+    },
+    {
+      "month": "2026-07",
+      "notices": 6,
+      "employees": 597
+    },
+    {
+      "month": "2026-08",
+      "notices": 19,
+      "employees": 4123
+    },
+    {
+      "month": "2026-09",
+      "notices": 20,
+      "employees": 1816
+    },
+    {
+      "month": "2026-10",
+      "notices": 35,
+      "employees": 4502
+    },
+    {
+      "month": "2026-11",
+      "notices": 19,
+      "employees": 843
+    },
+    {
+      "month": "2026-12",
+      "notices": 18,
+      "employees": 2626
+    },
+    {
+      "month": "2027-01",
+      "notices": 1,
+      "employees": 350
+    },
+    {
+      "month": "2027-03",
+      "notices": 2,
+      "employees": 171
+    }
+  ],
+  "largest": [
+    {
+      "key": "CA::aeg management oakland llc::2026-10-29::7000 coliseum way oakland ca 94621",
+      "state": "CA",
+      "employer": "AEG Management Oakland LLC",
+      "notice_date": "2026-10-29",
+      "employees": 1605,
+      "city": "7000 Coliseum Way Oakland CA 94621",
+      "county": "Alameda County",
+      "notice_type": "Layoff Permanent",
+      "source_url": "https://edd.ca.gov/siteassets/files/jobs_and_training/warn/warn_report1.xlsx",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "PA::jbs souderton::2026-08-14::249 allentown road, souderton, pa 18964",
+      "state": "PA",
+      "employer": "JBS Souderton",
+      "notice_date": "2026-08-14",
+      "employees": 1485,
+      "city": "249 Allentown Road, Souderton, PA 18964",
+      "county": "Montgomery",
+      "notice_type": "Closure",
+      "source_url": "https://www.pa.gov/agencies/dli/programs-services/workforce-development-home/warn-requirements/warn-notices",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "TX::republic national distributing company, llc (reyes holdings, l.l.c) grand prairie::2026-04-23::grand prairie",
+      "state": "TX",
+      "employer": "Republic National Distributing Company, LLC (Reyes Holdings, L.L.C) Grand Prairie",
+      "notice_date": "2026-04-23",
+      "employees": 689,
+      "city": "Grand Prairie",
+      "county": "Tarrant",
+      "notice_type": "",
+      "source_url": "https://data.texas.gov/resource/8w53-c4f6.csv?$limit=50000",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "TX::laurel ridge treatment center (laurel ridge)::2026-04-27::san antonio",
+      "state": "TX",
+      "employer": "Laurel Ridge Treatment Center (Laurel Ridge)",
+      "notice_date": "2026-04-27",
+      "employees": 648,
+      "city": "San Antonio",
+      "county": "Bexar",
+      "notice_type": "",
+      "source_url": "https://data.texas.gov/resource/8w53-c4f6.csv?$limit=50000",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "MI::republic national distributing company (rndc)::2026-08-17::2101 north 19 th st., escanaba, mi 49829 4495 airwest drive se, grand rapids, mi 49512 13000 eckles road, livonia, mi 48150 3460 e. washington road, saginaw, mi 48601 3055 cass road, traverse city, mi 49684",
+      "state": "MI",
+      "employer": "Republic National Distributing Company (RNDC)",
+      "notice_date": "2026-08-17",
+      "employees": 641,
+      "city": "2101 North 19 th St., Escanaba, MI 49829 4495 Airwest Drive SE, Grand Rapids, MI 49512 13000 Eckles Road, Livonia, MI 48150 3460 E. Washington Road, Saginaw, MI 48601 3055 Cass Road, Traverse City, MI 49684",
+      "county": "",
+      "notice_type": "Layoff",
+      "source_url": "https://www.michigan.gov/leo/sxa/search/results/?s={8E97AB1D-D2D4-47F8-8CC4-3F1039C8854F}&itemid={BE81F7C2-36A8-4FDE-853C-B05B6E090055}&sig=&autoFireSearch=true&v={1FFFCC21-5151-4A2B-ABFC-F7FE4E5C9783}&p=500&o=Created%20Date%20sort%2CDescending",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "PA::comcast technology center::2026-12-31::1800 arch street, philadelphia, pa 19103",
+      "state": "PA",
+      "employer": "Comcast Technology Center",
+      "notice_date": "2026-12-31",
+      "employees": 634,
+      "city": "1800 Arch Street, Philadelphia, PA 19103",
+      "county": "Philadelphia",
+      "notice_type": "Layoff",
+      "source_url": "https://www.pa.gov/agencies/dli/programs-services/workforce-development-home/warn-requirements/warn-notices",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "TX::republic national distributing company, llc (reyes holdings, l.l.c) houston::2026-04-23::houston",
+      "state": "TX",
+      "employer": "Republic National Distributing Company, LLC (Reyes Holdings, L.L.C) Houston",
+      "notice_date": "2026-04-23",
+      "employees": 588,
+      "city": "Houston",
+      "county": "Harris",
+      "notice_type": "",
+      "source_url": "https://data.texas.gov/resource/8w53-c4f6.csv?$limit=50000",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "MI::trinity health corp.::2026-10-25::20555 victor parkway, livonia, mi 48152",
+      "state": "MI",
+      "employer": "Trinity Health Corp.",
+      "notice_date": "2026-10-25",
+      "employees": 557,
+      "city": "20555 Victor Parkway, Livonia, MI 48152",
+      "county": "Wayne",
+      "notice_type": "Permanent layoff",
+      "source_url": "https://www.michigan.gov/leo/sxa/search/results/?s={8E97AB1D-D2D4-47F8-8CC4-3F1039C8854F}&itemid={BE81F7C2-36A8-4FDE-853C-B05B6E090055}&sig=&autoFireSearch=true&v={1FFFCC21-5151-4A2B-ABFC-F7FE4E5C9783}&p=500&o=Created%20Date%20sort%2CDescending",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "TX::spirit airlines (iah) may 2026::2026-05-02::houston",
+      "state": "TX",
+      "employer": "Spirit Airlines (IAH) May 2026",
+      "notice_date": "2026-05-02",
+      "employees": 515,
+      "city": "Houston",
+      "county": "Harris",
+      "notice_type": "",
+      "source_url": "https://data.texas.gov/resource/8w53-c4f6.csv?$limit=50000",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "NY::sky chefs, llc::2026-08-04::jfk international airport 139 west hangar road jamaica, ny, 11430",
+      "state": "NY",
+      "employer": "Sky Chefs, LLC",
+      "notice_date": "2026-08-04",
+      "employees": 471,
+      "city": "JFK International Airport 139 West Hangar Road Jamaica, NY, 11430",
+      "county": "Queens",
+      "notice_type": "Layoff",
+      "source_url": "https://public.tableau.com/views/WorkerAdjustmentRetrainingNotificationWARN/WARN.csv?:showVizHome=no",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "TX::spirit airlines (dfw) may 2026::2026-05-02::dallas",
+      "state": "TX",
+      "employer": "Spirit Airlines (DFW) May 2026",
+      "notice_date": "2026-05-02",
+      "employees": 444,
+      "city": "Dallas",
+      "county": "Dallas",
+      "notice_type": "",
+      "source_url": "https://data.texas.gov/resource/8w53-c4f6.csv?$limit=50000",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "MI::dakkota integrated systems, llc::2026-12-31::5905 van dyke st., detroit, mi 48312",
+      "state": "MI",
+      "employer": "Dakkota Integrated Systems, LLC",
+      "notice_date": "2026-12-31",
+      "employees": 397,
+      "city": "5905 Van Dyke St., Detroit, MI 48312",
+      "county": "Wayne",
+      "notice_type": "Closure",
+      "source_url": "https://www.michigan.gov/leo/sxa/search/results/?s={8E97AB1D-D2D4-47F8-8CC4-3F1039C8854F}&itemid={BE81F7C2-36A8-4FDE-853C-B05B6E090055}&sig=&autoFireSearch=true&v={1FFFCC21-5151-4A2B-ABFC-F7FE4E5C9783}&p=500&o=Created%20Date%20sort%2CDescending",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "TX::republic national distributing company, llc (reyes holdings, l.l.c) san antonio::2026-04-23::schertz",
+      "state": "TX",
+      "employer": "Republic National Distributing Company, LLC (Reyes Holdings, L.L.C) San Antonio",
+      "notice_date": "2026-04-23",
+      "employees": 372,
+      "city": "Schertz",
+      "county": "Bexar",
+      "notice_type": "",
+      "source_url": "https://data.texas.gov/resource/8w53-c4f6.csv?$limit=50000",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "MI::general motors, llc — lansing region::2027-01-14::general motors, llc — lansing grand river assembly/stamping 920 townsend street lansing, mi 48933 general motors, llc — lansing regional stamping 8175 millett highway lansing, mi 48917",
+      "state": "MI",
+      "employer": "General Motors, LLC — Lansing Region",
+      "notice_date": "2027-01-14",
+      "employees": 350,
+      "city": "General Motors, LLC — Lansing Grand River Assembly/Stamping 920 Townsend Street Lansing, MI 48933 General Motors, LLC — Lansing Regional Stamping 8175 Millett Highway Lansing, MI 48917",
+      "county": "Eaton, Ingham",
+      "notice_type": "Mass layoff",
+      "source_url": "https://www.michigan.gov/leo/sxa/search/results/?s={8E97AB1D-D2D4-47F8-8CC4-3F1039C8854F}&itemid={BE81F7C2-36A8-4FDE-853C-B05B6E090055}&sig=&autoFireSearch=true&v={1FFFCC21-5151-4A2B-ABFC-F7FE4E5C9783}&p=500&o=Created%20Date%20sort%2CDescending",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "MI::northpointe bank::2026-12-31::3333 deposit drive, grand rapids, mi 49546 5303 28th st. court se, grand rapids, mi 49546 124 n. bridge st., dewitt, mi 48820",
+      "state": "MI",
+      "employer": "Northpointe Bank",
+      "notice_date": "2026-12-31",
+      "employees": 338,
+      "city": "3333 Deposit Drive, Grand Rapids, MI 49546 5303 28th St. Court SE, Grand Rapids, MI 49546 124 N. Bridge St., DeWitt, MI 48820",
+      "county": "Clinton, Kent",
+      "notice_type": "Permanent layoff",
+      "source_url": "https://www.michigan.gov/leo/sxa/search/results/?s={8E97AB1D-D2D4-47F8-8CC4-3F1039C8854F}&itemid={BE81F7C2-36A8-4FDE-853C-B05B6E090055}&sig=&autoFireSearch=true&v={1FFFCC21-5151-4A2B-ABFC-F7FE4E5C9783}&p=500&o=Created%20Date%20sort%2CDescending",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "MI::compass group usa, inc. / morrison healthcare::2026-07-24::1100 s. van dyke road, bad axe, mi 48413 1900 columbus ave., bay city, mi 48708 401 n. hopper st., caro, mi 48723 401 s. ballenger highway, flint, mi 48532 1000 harrington st., mt. clemens, mi 48043 1221 south drive, mt. pleasant, mi 48858 50 perry st., pontiac, mi 48342 1221 pine grove ave., port huron, michigan 48060",
+      "state": "MI",
+      "employer": "Compass Group USA, Inc. / Morrison Healthcare",
+      "notice_date": "2026-07-24",
+      "employees": 311,
+      "city": "1100 S. Van Dyke Road, Bad Axe, MI 48413 1900 Columbus Ave., Bay City, MI 48708 401 N. Hopper St., Caro, MI 48723 401 S. Ballenger Highway, Flint, MI 48532 1000 Harrington St., Mt. Clemens, MI 48043 1221 South Drive, Mt. Pleasant, MI 48858 50 Perry St., Pontiac, MI 48342 1221 Pine Grove Ave., Port Huron, Michigan 48060",
+      "county": "Bay, Clare, Genesee, Huron, Isabella, Macomb, Oakland, Tuscola",
+      "notice_type": "Layoff",
+      "source_url": "https://www.michigan.gov/leo/sxa/search/results/?s={8E97AB1D-D2D4-47F8-8CC4-3F1039C8854F}&itemid={BE81F7C2-36A8-4FDE-853C-B05B6E090055}&sig=&autoFireSearch=true&v={1FFFCC21-5151-4A2B-ABFC-F7FE4E5C9783}&p=500&o=Created%20Date%20sort%2CDescending",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "TX::sodexo (sdh services east, llc) fort worth independent school district::2026-04-30::fort worth",
+      "state": "TX",
+      "employer": "Sodexo (SDH Services East, LLC) Fort Worth Independent School District",
+      "notice_date": "2026-04-30",
+      "employees": 291,
+      "city": "Fort Worth",
+      "county": "Tarrant",
+      "notice_type": "",
+      "source_url": "https://data.texas.gov/resource/8w53-c4f6.csv?$limit=50000",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "PA::eos energy storage, llc::2026-10-26::700 braddock avenue, building 700, east pittsburgh, pa 15112",
+      "state": "PA",
+      "employer": "Eos Energy Storage, LLC",
+      "notice_date": "2026-10-26",
+      "employees": 251,
+      "city": "700 Braddock Avenue, Building 700, East Pittsburgh, PA 15112",
+      "county": "Allegheny",
+      "notice_type": "Layoff",
+      "source_url": "https://www.pa.gov/agencies/dli/programs-services/workforce-development-home/warn-requirements/warn-notices",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "TX::el paso independent school district::2026-06-08::el paso",
+      "state": "TX",
+      "employer": "El Paso Independent School District",
+      "notice_date": "2026-06-08",
+      "employees": 250,
+      "city": "El Paso",
+      "county": "El Paso",
+      "notice_type": "",
+      "source_url": "https://data.texas.gov/resource/8w53-c4f6.csv?$limit=50000",
+      "first_seen": "2026-11-09"
+    },
+    {
+      "key": "TX::jpmorgan chase & co.::2026-06-23::plano",
+      "state": "TX",
+      "employer": "JPMorgan Chase & Co.",
+      "notice_date": "2026-06-23",
+      "employees": 244,
+      "city": "Plano",
+      "county": "Collin",
+      "notice_type": "",
+      "source_url": "https://data.texas.gov/resource/8w53-c4f6.csv?$limit=50000",
+      "first_seen": "2026-11-09"
+    }
+  ],
+  "repeat_employers": [
+    {
+      "state": "MI",
+      "employer": "Compass Group USA, Inc. / Morrison Healthcare",
+      "notices": 2,
+      "employees": 479
+    },
+    {
+      "state": "MI",
+      "employer": "Dakkota Integrated Systems, LLC",
+      "notices": 2,
+      "employees": 464
+    },
+    {
+      "state": "NY",
+      "employer": "InvaGen Pharmaceuticals, Inc.",
+      "notices": 2,
+      "employees": 205
+    },
+    {
+      "state": "PA",
+      "employer": "Kenco Logistic Services, LLC",
+      "notices": 2,
+      "employees": 133
+    },
+    {
+      "state": "PA",
+      "employer": "CJ Logistics America, LLC",
+      "notices": 2,
+      "employees": 113
+    },
+    {
+      "state": "NY",
+      "employer": "Career Systems Development Corporation",
+      "notices": 2,
+      "employees": 106
+    },
+    {
+      "state": "CA",
+      "employer": "ServiceNow, Inc.",
+      "notices": 2,
+      "employees": 62
+    },
+    {
+      "state": "NY",
+      "employer": "GU Markets, LLC.",
+      "notices": 2,
+      "employees": 46
+    },
+    {
+      "state": "CA",
+      "employer": "AES Corporation",
+      "notices": 2,
+      "employees": 41
+    },
+    {
+      "state": "NY",
+      "employer": "Cayuga Home for Children",
+      "notices": 2,
+      "employees": 38
+    }
+  ]
+}
