@@ -14,7 +14,7 @@ parser for Stage 3), read it with `git show archive/full-pipeline:<path>`.
 
 ## Stack
 
-- **Python 3.11+** (3.13 locally), dependencies in `requirements.txt` (httpx, tenacity, beautifulsoup4, openpyxl)
+- **Python 3.11+** (3.13 locally), dependencies in `pyproject.toml`, managed by uv (httpx, tenacity, beautifulsoup4, openpyxl)
 - **Storage**: CSV and JSON files under `data/`, committed to git
 - **pytest** and **ruff**
 - **React + TypeScript** frontend in `frontend/` (not yet adapted to the new data)
@@ -53,16 +53,14 @@ tests/fixtures/warn/   # captured source files
 ## Commands
 
 ```bash
-uv venv --python 3.13 .venv
-uv pip install -r requirements-dev.txt
 
-PYTHONPATH=. .venv/bin/python -m cam warn                      # fetch, merge, build
-PYTHONPATH=. .venv/bin/python -m cam warn --states CA --no-build
+uv run -m cam warn                      # fetch, merge, build
+uv run -m cam warn --states CA --no-build
 
-PYTHONPATH=. .venv/bin/python -m pytest --no-cov               # unit tests
-PYTHONPATH=. .venv/bin/python -m pytest tests/smoke -m live --no-cov
+uv run pytest --no-cov               # unit tests
+uv run pytest tests/smoke -m live --no-cov
 
-.venv/bin/ruff check . --fix && .venv/bin/ruff format .       # before every commit
+uv run ruff check . --fix && uv run ruff format .       # before every commit
 
 cd frontend && npm run dev
 ```

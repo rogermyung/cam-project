@@ -17,9 +17,7 @@ are in `docs/simplification-plan.md`.
 ## Quick start
 
 ```bash
-uv venv --python 3.13 .venv
-uv pip install -r requirements-dev.txt
-PYTHONPATH=. .venv/bin/python -m cam warn
+uv run -m cam warn
 ```
 
 No services, no environment variables. A full run takes a few seconds.
@@ -58,8 +56,8 @@ which for some states is the layoff effective date and can be in the future.
 ## Tests
 
 ```bash
-PYTHONPATH=. .venv/bin/python -m pytest                              # unit tests, no network
-PYTHONPATH=. .venv/bin/python -m pytest tests/smoke -m live --no-cov # fetch and parse every live source
+uv run pytest                              # unit tests, no network
+uv run pytest tests/smoke -m live --no-cov # fetch and parse every live source
 ```
 
 ## Frontend
