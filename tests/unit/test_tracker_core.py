@@ -13,6 +13,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+
 from cam.warn import (
     FIELDNAMES,
     WarnRecord,

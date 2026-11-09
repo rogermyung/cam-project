@@ -1,6 +1,14 @@
 # CAM simplification plan
 
-Status: proposed, 2026-11-09. Nothing in this plan has been implemented.
+Status: Stage 0 and Stage 1 implemented on branch `simplify/warn-tracker` (2026-11-09). Stages 2 to 4 not started.
+
+Deviations from the plan as written, found during Stage 1:
+
+- **TX, NY and PA do not parse live.** Their pages return HTTP 200 but contain no table the parser recognises, so only CA and MI produce data. The earlier "reachable" smoke result only checked the status code. All three stay configured and are reported as failed until their parsers are fixed.
+- **Row schema** is `key, state, employer, notice_date, employees, city, county, notice_type, source_url, first_seen`. The sources carry no separate effective date, and the dedup key now includes the city so two sites of one employer filed on the same day are kept apart.
+- **A sharp drop in a state's row count marks it `degraded`** in `status.json` instead of failing the run, because sources that publish a rolling window shrink legitimately.
+- **`cam/ingestion/cfpb.py` was removed with the rest** since it cannot import without the database layer. Stage 3 should port it from the `archive/full-pipeline` tag.
+- **`python -m cam warn` is run with `PYTHONPATH=.`** from a venv built with `uv pip install -r requirements-dev.txt`; there is no `uv sync` project metadata.
 
 ## Why the full version never ran
 

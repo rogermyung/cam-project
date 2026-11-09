@@ -1,0 +1,47 @@
+{
+  "CA": {
+    "added": 457,
+    "degraded": false,
+    "error": null,
+    "fetched": 458,
+    "last_attempt": "2026-11-09",
+    "last_success": "2026-11-09",
+    "ok": true
+  },
+  "MI": {
+    "added": 41,
+    "degraded": false,
+    "error": null,
+    "fetched": 41,
+    "last_attempt": "2026-11-09",
+    "last_success": "2026-11-09",
+    "ok": true
+  },
+  "NY": {
+    "added": 0,
+    "degraded": false,
+    "error": "parsed 0 records",
+    "fetched": 0,
+    "last_attempt": "2026-11-09",
+    "last_success": null,
+    "ok": false
+  },
+  "PA": {
+    "added": 0,
+    "degraded": false,
+    "error": "parsed 0 records",
+    "fetched": 0,
+    "last_attempt": "2026-11-09",
+    "last_success": null,
+    "ok": false
+  },
+  "TX": {
+    "added": 0,
+    "degraded": false,
+    "error": "parsed 0 records",
+    "fetched": 0,
+    "last_attempt": "2026-11-09",
+    "last_success": null,
+    "ok": false
+  }
+}

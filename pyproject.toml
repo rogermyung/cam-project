@@ -1,14 +1,12 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=cam --cov-report=term-missing --cov-report=html --cov-report=xml -v -m 'not live'"
-asyncio_mode = "auto"
 markers = [
     "live: test hits a real external endpoint (network required). Excluded from the default run; select explicitly with -m live (see tests/smoke/).",
 ]
 
 [tool.coverage.run]
 source = ["cam"]
-omit = ["cam/db/migrations/*"]
 
 [tool.coverage.report]
 # Raised to 80 once all modules ship; kept at 0 during bootstrap phase

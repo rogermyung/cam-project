@@ -22,6 +22,7 @@ from pathlib import Path
 
 import openpyxl
 import pytest
+
 from cam.warn import WarnRecord
 from cam.warn._xlsx import (
     CaXlsxStructureError,

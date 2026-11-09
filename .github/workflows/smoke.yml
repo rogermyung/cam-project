@@ -1,7 +1,6 @@
-# Weekly smoke test to detect upstream API/endpoint drift early.
-# Runs live tests against real endpoints. Per-source failures are expected signal,
-# not flakes — they indicate upstream changes we need to adapt to.
-name: CAM Weekly Smoke Test
+# Weekly live check: fetch and parse every configured WARN state source.
+# A failure here means a state changed its page and the parser needs updating.
+name: Weekly Smoke Test
 
 on:
   schedule:
@@ -11,7 +10,6 @@ on:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -28,11 +26,4 @@ jobs:
         run: uv pip install --system -r requirements-dev.txt
 
       - name: Run live smoke tests
-        env:
-          # No DB is touched — this dummy value only satisfies Settings validation.
-          DATABASE_URL: "sqlite:///:memory:"
-          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT || 'smoke@cam-project.org' }}
-          # Optional. When absent, tests/smoke/test_jev_align.py skips rather
-          # than failing, so the run costs nothing until the secret is set.
-          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-        run: python -m pytest tests/smoke -m live -v
+        run: python -m pytest tests/smoke -m live -v --no-cov
