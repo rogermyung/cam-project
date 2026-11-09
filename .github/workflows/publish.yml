@@ -1,0 +1,134 @@
+# Weekly WARN tracker run: fetch every state, commit the updated dataset, and
+# deploy the static site to GitHub Pages.
+#
+# Requires: Settings -> Pages -> Source: "GitHub Actions".
+#
+# Two jobs so each holds only the permission it needs: "fetch" can write to
+# the repository (to commit data) and "deploy" can publish to Pages.
+#
+# The data commit happens BEFORE the tracker's exit code is checked, so a run
+# where every state fails still records the failure in data/warn/status.json.
+# In that case the fetch job ends red and the site is left as it was.
+
+name: Publish WARN Tracker
+
+on:
+  schedule:
+    # Mondays 08:00 UTC, an hour after the smoke test.
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "cam/**"
+      - "frontend/**"
+      - ".github/workflows/publish.yml"
+
+concurrency:
+  group: publish-warn-tracker
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Fetch and merge notices
+        id: fetch
+        # Do not fail the step here; the exit code is checked after the commit.
+        run: |
+          set +e
+          uv run --no-dev -m cam warn --no-build
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Commit updated data
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/warn
+          if git diff --cached --quiet; then
+            echo "No data changes."
+          else
+            git commit -m "Data: weekly WARN notice update"
+            git push
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Stop if the tracker run failed
+        if: steps.fetch.outputs.exit_code != '0'
+        env:
+          EXIT_CODE: ${{ steps.fetch.outputs.exit_code }}
+        run: |
+          echo "::error::The tracker exited with $EXIT_CODE. See data/warn/status.json."
+          exit 1
+
+  deploy:
+    needs: fetch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The commit the fetch job just pushed, not the triggering one.
+          ref: ${{ needs.fetch.outputs.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build site
+        # Vite writes to ../site and copies the sample JSON from
+        # frontend/public/data, so the real data is built afterwards to
+        # overwrite it.
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Build site data
+        run: uv run --no-dev python -c "from pathlib import Path; from cam.warn.build import build; print(build(Path('data'), Path('site/data'))['total_notices'], 'notices')"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
