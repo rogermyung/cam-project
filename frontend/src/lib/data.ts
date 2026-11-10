@@ -1,4 +1,5 @@
 import type { Meta, Notice, Summary } from '@/types'
+import type { CfpbCompany, CfpbMeta } from '@/types'
 
 // BASE_URL is '/cam-project/' in production (GitHub Pages) and '/' in dev.
 const B = import.meta.env.BASE_URL
@@ -13,3 +14,6 @@ export const fetchMeta = () => getJson<Meta>('data/meta.json')
 
 export const fetchNotices = () => getJson<Notice[]>('data/notices.json')
 export const fetchSummary = () => getJson<Summary>('data/summary.json')
+
+export const fetchCfpbCompanies = () => getJson<CfpbCompany[]>('data/cfpb_companies.json')
+export const fetchCfpbMeta = () => getJson<CfpbMeta>('data/cfpb_meta.json')

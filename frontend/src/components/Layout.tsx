@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils'
 const NAV_LINKS = [
   { to: '/', label: 'Overview' },
   { to: '/notices', label: 'Notices' },
+  { to: '/cfpb', label: 'CFPB complaints' },
 ]
 
 interface LayoutProps {
@@ -52,7 +53,7 @@ export function Layout({ children }: LayoutProps) {
       <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {children}
         <footer className="mt-6 text-sm text-gray-400">
-          Data comes from state WARN Act notice lists.
+          Data comes from state WARN Act notice lists and the CFPB Consumer Complaint Database.
         </footer>
       </main>
     </div>

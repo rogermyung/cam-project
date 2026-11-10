@@ -25,41 +25,90 @@ def main(argv: list[str] | None = None) -> int:
     warn_p.add_argument("--states", default=None)
     warn_p.add_argument("--no-build", action="store_true")
 
-    if not argv or argv[0] != "warn":
+    cfpb_p = subs.add_parser("cfpb", help="Fetch and track CFPB consumer complaints")
+    cfpb_p.add_argument("--data-dir", default="data")
+    cfpb_p.add_argument("--site-dir", default="site/data")
+    cfpb_p.add_argument("--min-complaints", default=None, type=int)
+    cfpb_p.add_argument("--no-build", action="store_true")
+    cfpb_p.add_argument("--zip", dest="zip_path", default=None)
+
+    if not argv or argv[0] not in {"warn", "cfpb"}:
         parser.print_help()
         return 2
 
     args = parser.parse_args(argv)
 
-    from cam.warn import runner
+    if args.cmd == "warn":
+        from cam.warn import runner
 
-    selected_states = _parse_states(args.states)
+        selected_states = _parse_states(args.states)
+        try:
+            report = runner.run(
+                Path(args.data_dir),
+                states=selected_states,
+            )
+        except runner.RunFailed as e:
+            print(str(e), file=sys.stderr)
+            return 1
+
+        states_report: dict[str, Any] = report["states"]
+        for state_code in sorted(states_report.keys()):
+            entry = states_report[state_code]
+            ok = entry.get("ok")
+            status_txt = "ok" if ok else "FAILED"
+            fetched = entry.get("fetched")
+            added = entry.get("added")
+            err = entry.get("error")
+            if err:
+                print(f"{state_code} {status_txt} fetched={fetched} added={added} error={err}")
+            else:
+                print(f"{state_code} {status_txt} fetched={fetched} added={added}")
+
+        print(f"Totals total={report['total']} added={report['added']}")
+
+        if not args.no_build:
+            from cam.warn.build import build
+
+            build(Path(args.data_dir), Path(args.site_dir))
+
+        return 0
+
+    # args.cmd == "cfpb"
+    import cam.cfpb as cfpb
+    from cam.cfpb import runner
+
+    downloader = None
+    if args.zip_path is not None:
+        zip_path = Path(args.zip_path)
+
+        def downloader(_url: str) -> Path:
+            return zip_path
+
+    if args.min_complaints is None:
+        min_complaints = cfpb.MIN_COMPLAINTS
+    else:
+        min_complaints = args.min_complaints
+
     try:
-        report = runner.run(
+        status = runner.run(
             Path(args.data_dir),
-            states=selected_states,
+            downloader=downloader,
+            min_complaints=min_complaints,
         )
     except runner.RunFailed as e:
         print(str(e), file=sys.stderr)
         return 1
 
-    states_report: dict[str, Any] = report["states"]
-    for state_code in sorted(states_report.keys()):
-        entry = states_report[state_code]
-        ok = entry.get("ok")
-        status_txt = "ok" if ok else "FAILED"
-        fetched = entry.get("fetched")
-        added = entry.get("added")
-        err = entry.get("error")
-        if err:
-            print(f"{state_code} {status_txt} fetched={fetched} added={added} error={err}")
-        else:
-            print(f"{state_code} {status_txt} fetched={fetched} added={added}")
-
-    print(f"Totals total={report['total']} added={report['added']}")
+    print(
+        "CFPB ok "
+        f"companies={status['companies']} "
+        f"rows={status['rows']} "
+        f"complaints={status['complaints']} "
+        f"window={status['window_start']}..{status['window_end']}"
+    )
 
     if not args.no_build:
-        from cam.warn.build import build
+        from cam.cfpb.build import build
 
         build(Path(args.data_dir), Path(args.site_dir))
 

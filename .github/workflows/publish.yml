@@ -1,5 +1,5 @@
-# Weekly WARN tracker run: fetch every state, commit the updated dataset, and
-# deploy the static site to GitHub Pages.
+# Weekly publish run: update the WARN tracker and aggregate CFPB complaints,
+# commit the updated datasets, and deploy the static site to GitHub Pages.
 #
 # Requires: Settings -> Pages -> Source: "GitHub Actions".
 #
@@ -7,10 +7,11 @@
 # the repository (to commit data) and "deploy" can publish to Pages.
 #
 # The data commit happens BEFORE the tracker's exit code is checked, so a run
-# where every state fails still records the failure in data/warn/status.json.
-# In that case the fetch job ends red and the site is left as it was.
+# where every WARN state fails still records the failure in data/warn/status.json.
+# A CFPB run failure is recorded in data/cfpb/status.json and shown on the page
+# but does not block the deploy.
 
-name: Publish WARN Tracker
+name: Publish WARN Tracker and CFPB Monitor
 
 on:
   schedule:
@@ -58,19 +59,33 @@ jobs:
           uv run --no-dev -m cam warn --no-build
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
+      - name: Fetch and aggregate CFPB complaints
+        id: cfpb
+        run: |
+          set +e
+          uv run --no-dev -m cam cfpb --no-build
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
       - name: Commit updated data
         id: commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/warn
+          git add data/warn data/cfpb
           if git diff --cached --quiet; then
             echo "No data changes."
           else
-            git commit -m "Data: weekly WARN notice update"
+            git commit -m "Data: weekly WARN and CFPB update"
             git push
           fi
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Warn if the CFPB run failed
+        if: steps.cfpb.outputs.exit_code != '0'
+        env:
+          EXIT_CODE: ${{ steps.cfpb.outputs.exit_code }}
+        run: |
+          echo "::warning::The CFPB run exited with $EXIT_CODE. See data/cfpb/status.json; the site keeps the previous CFPB data."
 
       - name: Stop if the tracker run failed
         if: steps.fetch.outputs.exit_code != '0'
@@ -124,6 +139,9 @@ jobs:
 
       - name: Build site data
         run: uv run --no-dev python -c "from pathlib import Path; from cam.warn.build import build; print(build(Path('data'), Path('site/data'))['total_notices'], 'notices')"
+
+      - name: Build CFPB site data
+        run: if [ -f data/cfpb/monthly.csv ]; then uv run --no-dev python -c "from pathlib import Path; from cam.cfpb.build import build; print(build(Path('data'), Path('site/data'))['companies'], 'companies')"; fi
 
       - uses: actions/upload-pages-artifact@v3
         with:

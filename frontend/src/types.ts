@@ -64,3 +64,9 @@ export interface Meta {
   latest_notice_date: string | null
   states: Record<string, StateStatus>
 }
+
+export interface CfpbMonth { month: string; complaints: number }            // month is 'YYYY-MM'
+export interface CfpbProduct { product: string; complaints: number }
+export interface CfpbCompany { company: string; total: number; latest: number; baseline: number; ratio: number | null; spike: boolean; top_product: string; months: CfpbMonth[]; products: CfpbProduct[] }
+export interface CfpbStatus { ok: boolean; error: string | null; last_attempt: string; last_success: string | null; rows_read: number; complaints: number; companies: number; rows: number; window_start: string; window_end: string; min_complaints: number; source_url: string; degraded: boolean }
+export interface CfpbMeta { generated_at: string; window_start: string; window_end: string; latest_month: string; companies: number; total_complaints: number; spikes: number; status: Partial<CfpbStatus> }
