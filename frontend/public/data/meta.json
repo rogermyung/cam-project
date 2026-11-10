@@ -1,6 +1,53 @@
 {
-  "exported_at": "2026-03-15T06:00:00+00:00",
-  "entity_count": 8,
-  "alert_count": 3,
-  "version": "1"
+  "generated_at": "2026-11-09T12:00:00+00:00",
+  "total_notices": 157,
+  "total_employees": 21089,
+  "latest_notice_date": "2027-03-19",
+  "states": {
+    "CA": {
+      "added": 0,
+      "degraded": false,
+      "error": null,
+      "fetched": 458,
+      "last_attempt": "2026-11-09",
+      "last_success": "2026-11-09",
+      "ok": true
+    },
+    "MI": {
+      "added": 0,
+      "degraded": false,
+      "error": null,
+      "fetched": 41,
+      "last_attempt": "2026-11-09",
+      "last_success": "2026-11-09",
+      "ok": true
+    },
+    "NY": {
+      "added": 0,
+      "degraded": true,
+      "error": null,
+      "fetched": 225,
+      "last_attempt": "2026-11-09",
+      "last_success": "2026-11-09",
+      "ok": true
+    },
+    "PA": {
+      "added": 0,
+      "degraded": false,
+      "error": "HTTP 503 Service Unavailable",
+      "fetched": 319,
+      "last_attempt": "2026-11-09",
+      "last_success": "2026-11-02",
+      "ok": false
+    },
+    "TX": {
+      "added": 0,
+      "degraded": false,
+      "error": null,
+      "fetched": 2367,
+      "last_attempt": "2026-11-09",
+      "last_success": "2026-11-09",
+      "ok": true
+    }
+  }
 }

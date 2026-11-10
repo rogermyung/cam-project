@@ -1,7 +1,7 @@
 # Frontend Build Validation
 #
-# Runs on PRs that touch frontend/ to ensure the React app compiles cleanly
-# before merging. No deployment — just build + type-check + lint.
+# Runs on PRs that touch frontend/: logic tests, type-check + build, lint.
+# Deployment happens in publish.yml.
 
 name: Frontend Build
 
@@ -30,12 +30,15 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Logic tests
+        run: node --test "tests/*.test.ts"
 
       - name: Type-check
         run: npm run build
