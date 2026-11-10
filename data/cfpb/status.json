@@ -1,0 +1,15 @@
+{
+  "companies": 181,
+  "complaints": 12068368,
+  "degraded": false,
+  "error": null,
+  "last_attempt": "2026-11-10",
+  "last_success": "2026-11-10",
+  "min_complaints": 1000,
+  "ok": true,
+  "rows": 19868,
+  "rows_read": 19045222,
+  "source_url": "https://files.consumerfinance.gov/ccdb/complaints.csv.zip",
+  "window_end": "2026-10",
+  "window_start": "2024-11"
+}

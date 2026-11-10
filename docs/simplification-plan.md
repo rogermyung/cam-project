@@ -1,6 +1,6 @@
 # CAM simplification plan
 
-Status: Stages 0, 1 and 2 implemented on branch `simplify/warn-tracker` (2026-11-09). The publish workflow has not run yet because the branch is not merged. Stages 3 and 4 not started.
+Status: Stages 0, 1 and 2 implemented on 2026-11-09 and merged to `main` on 2026-11-10 (PR #59); the publish workflow ran green once on that merge. Stage 3 implemented on branch `stage3/cfpb-monitor` (2026-11-10). Stage 4 not started.
 
 Deviations from the plan as written, found during Stage 1:
 
@@ -9,6 +9,15 @@ Deviations from the plan as written, found during Stage 1:
 - **A sharp drop in a state's row count marks it `degraded`** in `status.json` instead of failing the run, because sources that publish a rolling window shrink legitimately.
 - **`cam/ingestion/cfpb.py` was removed with the rest** since it cannot import without the database layer. Stage 3 should port it from the `archive/full-pipeline` tag.
 - **The command is `uv run -m cam warn`**; uv installs the dependencies declared in `pyproject.toml` on first use.
+
+Deviations found during Stage 3:
+
+- **The bulk zip is 365 MB, not over 1 GB** (5.8 GB uncompressed, 19.0 million rows). Measured locally on 2026-11-10: the full command took 187 s, of which 58 s is the single-pass aggregate and build (60 MB peak memory). The built-in httpx downloader accounts for the rest; curl fetches the same file in 15 s, so there is room to speed it up. It runs in the weekly workflow; no monthly schedule needed.
+- **`_clean_company_name` was not kept as written.** The archived version stripped legal suffixes (`BANK`, `N.A.`, `LLC`) for entity resolution, which would merge distinct companies. The key is the CFPB `Company` value with whitespace collapsed.
+- **`monthly.csv` is replaced, not merged**, on each successful run, covering the 24 full months before the current one and companies with at least 1,000 complaints in that window (181 companies, about 19,900 rows, 1.3 MB).
+- **Spike rule**: latest full month more than 50% above the mean of the preceding 12 months, computed in `cam/cfpb/build.py` from the CSV. The archived `detect_complaint_spike` compared two half-windows against the database.
+- **A CFPB failure does not fail the workflow.** It is committed to `data/cfpb/status.json`, raises a workflow warning and shows on the page; only a total WARN failure ends the run red.
+- **The scheduled-workflow half of "done when" is unverified** until the branch is merged and the workflow runs.
 
 ## Why the full version never ran
 
