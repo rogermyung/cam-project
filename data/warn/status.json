@@ -1,9 +1,9 @@
 {
   "CA": {
-    "added": 0,
+    "added": 21,
     "degraded": false,
     "error": null,
-    "fetched": 458,
+    "fetched": 479,
     "last_attempt": "2026-11-10",
     "last_success": "2026-11-10",
     "ok": true
