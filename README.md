@@ -60,8 +60,31 @@ uv run pytest                              # unit tests, no network
 uv run pytest tests/smoke -m live --no-cov # fetch and parse every live source
 ```
 
-## Frontend
+## Website
 
-`frontend/` still contains the React dashboard built for the old composite-score
-data. It has not been adapted to the new JSON files yet; that is Stage 2 of the
-plan.
+`frontend/` is a small React + TypeScript site with two pages: an overview
+(totals, notices per month, per-source status, largest notices, repeat
+employers) and a filterable, sortable table of every notice.
+
+```bash
+cd frontend
+npm ci
+npm run dev                       # http://localhost:5173/cam-project/ with sample data
+node --test "tests/*.test.ts"     # logic tests
+npm run build                     # type-check and build into ../site
+```
+
+`npm run dev` serves the sample JSON in `frontend/public/data/`, which includes
+one failed and one degraded source on purpose so those states are visible. To
+see the real dataset locally, run `npm run build`, then `uv run -m cam warn`
+from the repository root, then `npm run preview` in `frontend/`.
+
+## Publishing
+
+`.github/workflows/publish.yml` runs every Monday at 08:00 UTC, on manual
+dispatch, and on pushes to `main` that touch `cam/` or `frontend/`. It fetches
+all states, commits any change under `data/warn/`, builds the site with the
+fresh data and deploys it to GitHub Pages at
+https://rogermyung.github.io/cam-project/. If every source fails, the failure
+is still committed to `status.json`, the run ends red, and the published site
+is left as it was.

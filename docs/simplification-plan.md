@@ -1,6 +1,6 @@
 # CAM simplification plan
 
-Status: Stage 0 and Stage 1 implemented on branch `simplify/warn-tracker` (2026-11-09). Stages 2 to 4 not started.
+Status: Stages 0, 1 and 2 implemented on branch `simplify/warn-tracker` (2026-11-09). The publish workflow has not run yet because the branch is not merged. Stages 3 and 4 not started.
 
 Deviations from the plan as written, found during Stage 1:
 

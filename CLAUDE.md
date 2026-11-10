@@ -3,8 +3,8 @@
 ## Project Overview
 
 A database-free tracker of US state WARN Act layoff notices. See `README.md` for
-usage and `docs/simplification-plan.md` for the staged plan (Stage 1 done;
-Stage 2 publish, Stage 3 CFPB tracker, Stage 4 optional cross-links).
+usage and `docs/simplification-plan.md` for the staged plan (Stages 1 and 2
+done; Stage 3 CFPB tracker, Stage 4 optional cross-links).
 
 The earlier multi-agency pipeline is archived under the git tags
 `archive/full-pipeline` and `archive/jev-screening`; its spec is in
@@ -17,7 +17,7 @@ parser for Stage 3), read it with `git show archive/full-pipeline:<path>`.
 - **Python 3.11+** (3.13 locally), dependencies in `pyproject.toml`, managed by uv (httpx, tenacity, beautifulsoup4, openpyxl)
 - **Storage**: CSV and JSON files under `data/`, committed to git
 - **pytest** and **ruff**
-- **React + TypeScript** frontend in `frontend/` (not yet adapted to the new data)
+- **React + TypeScript** static site in `frontend/` (Vite, Tailwind, Recharts), deployed to GitHub Pages by `.github/workflows/publish.yml`
 
 ## Layout
 
@@ -37,6 +37,12 @@ data/warn/             # notices.csv (source of truth), status.json
 tests/unit/            # test_tracker_*.py, test_store.py — no network
 tests/smoke/           # live fetch-and-parse per state (-m live)
 tests/fixtures/warn/   # captured source files
+frontend/
+├── src/types.ts       # data contract: mirrors the JSON from cam/warn/build.py
+├── src/lib/notices.ts # pure logic (filter, sort, paginate, month range, freshness); no runtime imports
+├── src/pages/         # OverviewPage, NoticesPage
+├── tests/             # node --test "tests/*.test.ts"
+└── public/data/       # sample JSON for npm run dev
 ```
 
 ## Conventions
@@ -48,6 +54,9 @@ tests/fixtures/warn/   # captured source files
 - **Zero records is a failure**, not a success. A page that returns 200 but parses to nothing is drift.
 - **Unit tests make no network calls.** Pass a fake `fetcher` to `run()` or monkeypatch `cam.warn.runner.fetch`.
 - **Live sources drift.** After changing a parser, run the smoke test for that state; a passing unit test against a fixture says nothing about the live page.
+- **Site data contract.** If `cam/warn/build.py` output changes, update `frontend/src/types.ts` and regenerate `frontend/public/data/` in the same change.
+- **Frontend checks**: from `frontend/`, `node --test "tests/*.test.ts"`, `npm run build`, and `npx eslint src --max-warnings 0` must all pass.
+- **Workflows**: pin third-party actions to a commit SHA and give each job only the permissions it needs.
 - **Adding or fixing a state**: capture the real page into `tests/fixtures/warn/`, write the test against it, then edit `state_urls.py` or add a parser module dispatched from `parse()`.
 
 ## Commands
