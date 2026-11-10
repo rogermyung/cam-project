@@ -4,8 +4,8 @@
     "degraded": false,
     "error": null,
     "fetched": 458,
-    "last_attempt": "2026-11-09",
-    "last_success": "2026-11-09",
+    "last_attempt": "2026-11-10",
+    "last_success": "2026-11-10",
     "ok": true
   },
   "MI": {
@@ -13,8 +13,8 @@
     "degraded": false,
     "error": null,
     "fetched": 41,
-    "last_attempt": "2026-11-09",
-    "last_success": "2026-11-09",
+    "last_attempt": "2026-11-10",
+    "last_success": "2026-11-10",
     "ok": true
   },
   "NY": {
@@ -22,8 +22,8 @@
     "degraded": false,
     "error": null,
     "fetched": 225,
-    "last_attempt": "2026-11-09",
-    "last_success": "2026-11-09",
+    "last_attempt": "2026-11-10",
+    "last_success": "2026-11-10",
     "ok": true
   },
   "PA": {
@@ -31,8 +31,8 @@
     "degraded": false,
     "error": null,
     "fetched": 319,
-    "last_attempt": "2026-11-09",
-    "last_success": "2026-11-09",
+    "last_attempt": "2026-11-10",
+    "last_success": "2026-11-10",
     "ok": true
   },
   "TX": {
@@ -40,8 +40,8 @@
     "degraded": false,
     "error": null,
     "fetched": 2367,
-    "last_attempt": "2026-11-09",
-    "last_success": "2026-11-09",
+    "last_attempt": "2026-11-10",
+    "last_success": "2026-11-10",
     "ok": true
   }
 }
